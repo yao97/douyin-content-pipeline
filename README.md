@@ -93,6 +93,7 @@ flowchart TD
 ```
 自媒体脚本知识库/
 ├── README.md                    本文件：项目介绍 + 功能 + 架构
+├── index.html                   单页可视化介绍（浏览器直接打开 / GitHub Pages 首页）
 ├── LICENSE                      MIT（仅覆盖本仓库自有代码）
 ├── .gitignore
 ├── _sync_core.py                从实盘同步 core/ 快照（自动脱敏 + 校验）
@@ -242,6 +243,8 @@ python _upload_alist.py --apply --jobs 3
 ---
 
 ## 9. 文档索引
+
+> 偏好图形化阅读？浏览器打开 [index.html](index.html) —— 单页可视化介绍，含功能矩阵、架构图与每日自动化时间线。
 
 | 文档 | 内容 |
 |---|---|

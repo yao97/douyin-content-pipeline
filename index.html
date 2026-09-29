@@ -1,0 +1,997 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>自媒体脚本知识库 · 抖音内容资产管理流水线</title>
+<meta name="description" content="抖音账号采集 → 视频转音频 → ASR 文案转写 的全自动内容资产流水线：13 项能力、9 篇文档、16 个核心脚本。">
+<script>document.documentElement.className += ' js';</script>
+<style>
+  :root{
+    --bg:#08080b;
+    --bg-soft:#0e0e13;
+    --card:#141419;
+    --card-hi:#1a1a21;
+    --line:rgba(255,255,255,.08);
+    --line-hi:rgba(255,255,255,.16);
+    --fg:#ecedf1;
+    --fg-dim:#a2a3ae;
+    --fg-mute:#6f707c;
+    --red:#fe2c55;
+    --cyan:#25f4ee;
+    --amber:#ffb340;
+    --violet:#a78bfa;
+    --r:16px;
+    --mono:ui-monospace,"SF Mono","Cascadia Mono",Consolas,"Liberation Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth;scroll-padding-top:76px}
+  body{
+    background:var(--bg);color:var(--fg);font-family:var(--sans);
+    line-height:1.7;font-size:15px;-webkit-font-smoothing:antialiased;
+    overflow-x:hidden;
+  }
+  a{color:inherit;text-decoration:none}
+  code{font-family:var(--mono);font-size:.86em}
+
+  /* ── 背景装饰 ───────────────────────────── */
+  .bg{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+  .bg-grid{
+    position:absolute;inset:-2px;
+    background-image:linear-gradient(rgba(255,255,255,.028) 1px,transparent 1px),
+                     linear-gradient(90deg,rgba(255,255,255,.028) 1px,transparent 1px);
+    background-size:56px 56px;
+    mask-image:radial-gradient(ellipse 90% 60% at 50% 0%,#000 30%,transparent 75%);
+    -webkit-mask-image:radial-gradient(ellipse 90% 60% at 50% 0%,#000 30%,transparent 75%);
+  }
+  .bg-glow{position:absolute;border-radius:50%;filter:blur(120px);opacity:.5}
+  .bg-glow.r{width:620px;height:620px;top:-260px;left:-140px;background:radial-gradient(circle,rgba(254,44,85,.42),transparent 68%)}
+  .bg-glow.c{width:560px;height:560px;top:-200px;right:-160px;background:radial-gradient(circle,rgba(37,244,238,.3),transparent 68%)}
+
+  /* ── 导航 ──────────────────────────────── */
+  .nav{
+    position:sticky;top:0;z-index:50;
+    backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+    background:rgba(8,8,11,.72);border-bottom:1px solid transparent;
+    transition:border-color .3s,background .3s;
+  }
+  .nav.on{border-bottom-color:var(--line);background:rgba(8,8,11,.9)}
+  .nav-in{max-width:1120px;margin:0 auto;padding:0 24px;height:64px;display:flex;align-items:center;gap:16px}
+  .logo{display:flex;align-items:center;gap:10px;font-weight:650;letter-spacing:.2px;white-space:nowrap}
+  .logo-mark{
+    width:26px;height:26px;border-radius:8px;flex:none;position:relative;
+    background:linear-gradient(135deg,var(--red),#ff6a86);
+    box-shadow:0 0 0 1px rgba(255,255,255,.12) inset,0 6px 18px -6px rgba(254,44,85,.7);
+  }
+  .logo-mark::after{
+    content:"";position:absolute;inset:8px;border-radius:50%;
+    background:var(--cyan);opacity:.9;
+  }
+  .nav-links{display:flex;gap:2px;margin-left:auto;overflow-x:auto;scrollbar-width:none}
+  .nav-links::-webkit-scrollbar{display:none}
+  .nav-links a{
+    padding:7px 12px;border-radius:9px;font-size:13.5px;color:var(--fg-dim);
+    transition:color .18s,background .18s;white-space:nowrap;
+  }
+  .nav-links a:hover{color:var(--fg);background:rgba(255,255,255,.06)}
+  .nav-links a.cur{color:var(--fg);background:rgba(255,255,255,.09)}
+
+  /* ── 通用 ──────────────────────────────── */
+  main{position:relative;z-index:1}
+  .wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+  section{padding:76px 0}
+  .eyebrow{
+    display:inline-flex;align-items:center;gap:8px;
+    font-size:12px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--cyan);margin-bottom:14px;font-family:var(--mono);
+  }
+  .eyebrow::before{content:"";width:20px;height:1px;background:currentColor;opacity:.6}
+  h2{font-size:clamp(24px,3.4vw,32px);font-weight:700;letter-spacing:-.4px;margin-bottom:10px}
+  .lead{color:var(--fg-dim);max-width:660px;font-size:15.5px}
+  .sec-head{margin-bottom:38px}
+
+  /* ── Hero ──────────────────────────────── */
+  .hero{padding:96px 0 64px;text-align:center}
+  .badge{
+    display:inline-flex;align-items:center;gap:9px;padding:6px 15px 6px 11px;
+    border:1px solid var(--line-hi);border-radius:999px;background:rgba(255,255,255,.035);
+    font-size:12.5px;color:var(--fg-dim);margin-bottom:26px;
+  }
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--cyan);box-shadow:0 0 10px var(--cyan);flex:none;animation:pulse 2.4s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  h1{
+    font-size:clamp(34px,6.4vw,60px);font-weight:750;letter-spacing:-1.4px;line-height:1.12;
+    margin-bottom:20px;
+  }
+  h1 .grad{
+    background:linear-gradient(100deg,var(--red) 8%,#ff8fa3 42%,var(--cyan) 96%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .hero p.sub{color:var(--fg-dim);font-size:clamp(15px,1.9vw,17.5px);max-width:680px;margin:0 auto 34px}
+  .hero p.sub b{color:var(--fg);font-weight:600}
+
+  .flow{display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;margin-bottom:36px}
+  .flow-node{
+    display:flex;flex-direction:column;gap:2px;align-items:center;
+    padding:11px 20px;border:1px solid var(--line-hi);border-radius:13px;
+    background:linear-gradient(180deg,rgba(255,255,255,.055),rgba(255,255,255,.015));
+    min-width:112px;
+  }
+  .flow-node .k{font-size:10.5px;font-family:var(--mono);color:var(--fg-mute);letter-spacing:.08em}
+  .flow-node .v{font-size:14.5px;font-weight:650}
+  .flow-node.n1{border-color:rgba(254,44,85,.4);box-shadow:0 8px 26px -14px rgba(254,44,85,.9)}
+  .flow-node.n2{border-color:rgba(255,179,64,.4);box-shadow:0 8px 26px -14px rgba(255,179,64,.9)}
+  .flow-node.n3{border-color:rgba(37,244,238,.4);box-shadow:0 8px 26px -14px rgba(37,244,238,.9)}
+  .flow-arrow{color:var(--fg-mute);font-size:17px;flex:none}
+
+  .cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+  .btn{
+    display:inline-flex;align-items:center;gap:8px;padding:11px 22px;border-radius:11px;
+    font-size:14.5px;font-weight:600;border:1px solid transparent;cursor:pointer;
+    transition:transform .16s,box-shadow .2s,background .2s,border-color .2s;font-family:inherit;
+  }
+  .btn:hover{transform:translateY(-2px)}
+  .btn-p{background:linear-gradient(135deg,var(--red),#ff5470);color:#fff;box-shadow:0 10px 28px -12px rgba(254,44,85,.95)}
+  .btn-s{background:rgba(255,255,255,.05);border-color:var(--line-hi);color:var(--fg)}
+  .btn-s:hover{background:rgba(255,255,255,.1)}
+
+  /* ── 统计 ──────────────────────────────── */
+  .stats-sec{padding:0 0 76px}
+  .stats{
+    display:grid;grid-template-columns:repeat(4,1fr);gap:1px;
+    background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;
+  }
+  .stat{background:var(--bg-soft);padding:28px 22px;text-align:center}
+  .stat .num{
+    font-family:var(--mono);font-size:clamp(26px,4vw,36px);font-weight:700;line-height:1.1;
+    letter-spacing:-1px;
+  }
+  .stat:nth-child(1) .num{color:var(--red)}
+  .stat:nth-child(2) .num{color:var(--fg)}
+  .stat:nth-child(3) .num{color:var(--amber)}
+  .stat:nth-child(4) .num{color:var(--cyan)}
+  .stat .lbl{margin-top:7px;font-size:12.5px;color:var(--fg-dim)}
+  .stat .sub{margin-top:3px;font-size:11px;color:var(--fg-mute);font-family:var(--mono)}
+
+  /* ── 功能矩阵 ──────────────────────────── */
+  .group{margin-bottom:34px}
+  .group:last-child{margin-bottom:0}
+  .group-h{display:flex;align-items:center;gap:11px;margin-bottom:15px}
+  .chip{
+    font-family:var(--mono);font-size:11px;font-weight:700;padding:3px 9px;border-radius:7px;
+    letter-spacing:.04em;
+  }
+  .group-h .t{font-weight:650;font-size:16.5px}
+  .group-h .n{font-size:12.5px;color:var(--fg-mute);font-family:var(--mono)}
+  .g1 .chip{background:rgba(254,44,85,.14);color:#ff8ba2;border:1px solid rgba(254,44,85,.28)}
+  .g2 .chip{background:rgba(255,179,64,.14);color:#ffcd85;border:1px solid rgba(255,179,64,.28)}
+  .g3 .chip{background:rgba(37,244,238,.12);color:#7ff7f2;border:1px solid rgba(37,244,238,.26)}
+  .g4 .chip{background:rgba(167,139,250,.14);color:#c6b3fd;border:1px solid rgba(167,139,250,.28)}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(268px,1fr));gap:13px}
+  .card{
+    background:var(--card);border:1px solid var(--line);border-radius:13px;padding:18px 18px 17px;
+    transition:border-color .2s,background .2s,transform .2s;position:relative;overflow:hidden;
+  }
+  .card::before{
+    content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--accent,transparent);
+    opacity:0;transition:opacity .25s;
+  }
+  .card:hover{border-color:var(--line-hi);background:var(--card-hi);transform:translateY(-2px)}
+  .card:hover::before{opacity:1}
+  .g1 .card{--accent:var(--red)}
+  .g2 .card{--accent:var(--amber)}
+  .g3 .card{--accent:var(--cyan)}
+  .g4 .card{--accent:var(--violet)}
+  .card .ct{display:flex;align-items:baseline;gap:8px;margin-bottom:7px}
+  .card .ct h3{font-size:15px;font-weight:650}
+  .card .ct .idx{font-family:var(--mono);font-size:11px;color:var(--fg-mute);flex:none}
+  .card p{font-size:13.4px;color:var(--fg-dim);line-height:1.65}
+  .card .file{
+    margin-top:11px;font-family:var(--mono);font-size:11.5px;color:var(--fg-mute);
+    border-top:1px dashed var(--line);padding-top:9px;word-break:break-all;
+  }
+  .card .file b{color:#8fd8ff;font-weight:500}
+
+  /* ── 架构 ──────────────────────────────── */
+  .arch{
+    background:var(--bg-soft);border:1px solid var(--line);border-radius:var(--r);
+    padding:34px 26px;display:flex;flex-direction:column;gap:16px;
+  }
+  .arch-row{display:flex;align-items:stretch;gap:12px;flex-wrap:wrap;justify-content:center}
+  .arch-box{
+    flex:1 1 190px;min-width:170px;border:1px solid var(--line-hi);border-radius:12px;
+    padding:14px 15px;background:var(--card);
+  }
+  .arch-box .k{font-family:var(--mono);font-size:10.5px;color:var(--fg-mute);letter-spacing:.06em;margin-bottom:5px}
+  .arch-box .v{font-size:14px;font-weight:650;margin-bottom:4px}
+  .arch-box .d{font-size:12px;color:var(--fg-dim);line-height:1.55}
+  .arch-box.red{border-color:rgba(254,44,85,.34);background:linear-gradient(180deg,rgba(254,44,85,.09),rgba(254,44,85,.02))}
+  .arch-box.amber{border-color:rgba(255,179,64,.32);background:linear-gradient(180deg,rgba(255,179,64,.09),rgba(255,179,64,.02))}
+  .arch-box.cyan{border-color:rgba(37,244,238,.3);background:linear-gradient(180deg,rgba(37,244,238,.08),rgba(37,244,238,.02))}
+  .arch-box.violet{border-color:rgba(167,139,250,.3);background:linear-gradient(180deg,rgba(167,139,250,.08),rgba(167,139,250,.02))}
+  .arch-box.dim{border-style:dashed}
+  .arch-arrow{display:flex;align-items:center;justify-content:center;color:var(--fg-mute);font-size:16px;flex:none;width:100%}
+  .arch-note{font-size:12.5px;color:var(--fg-mute);text-align:center;font-family:var(--mono);line-height:1.9}
+
+  /* ── 代码目录 ──────────────────────────── */
+  .core-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:13px}
+  .core-dir{
+    background:var(--card);border:1px solid var(--line);border-radius:13px;padding:16px 17px;
+    transition:border-color .2s;
+  }
+  .core-dir:hover{border-color:var(--line-hi)}
+  .core-dir .h{display:flex;align-items:center;gap:9px;margin-bottom:11px}
+  .core-dir .h .ic{
+    width:22px;height:20px;border-radius:5px;background:rgba(37,244,238,.1);
+    border:1px solid rgba(37,244,238,.22);flex:none;position:relative;
+  }
+  .core-dir .h .ic::after{
+    content:"";position:absolute;left:3px;top:4px;right:3px;height:1.5px;
+    background:var(--cyan);opacity:.75;box-shadow:0 4px 0 rgba(37,244,238,.45),0 8px 0 rgba(37,244,238,.25);
+  }
+  .core-dir .h code{font-size:13px;font-weight:650;color:var(--fg)}
+  .core-dir .h .cn{font-size:11.5px;color:var(--fg-mute);margin-left:auto;font-family:var(--mono)}
+  .core-dir ul{list-style:none;display:flex;flex-direction:column;gap:4px}
+  .core-dir li{
+    font-family:var(--mono);font-size:12px;color:var(--fg-dim);
+    display:flex;gap:8px;align-items:baseline;line-height:1.6;
+  }
+  .core-dir li::before{content:"›";color:var(--fg-mute);flex:none}
+  .core-dir li span{color:var(--fg-mute);font-family:var(--sans);font-size:11.5px}
+
+  /* ── 自动化时间线 ──────────────────────── */
+  .timeline{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
+  .tl-card{
+    background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px;
+    position:relative;overflow:hidden;
+  }
+  .tl-card::after{
+    content:"";position:absolute;inset:0 auto 0 0;width:3px;
+    background:linear-gradient(180deg,var(--red),var(--cyan));
+  }
+  .tl-time{font-family:var(--mono);font-size:23px;font-weight:700;color:var(--fg);margin-bottom:3px}
+  .tl-name{font-size:13px;color:var(--fg-mute);margin-bottom:16px}
+  .tl-steps{list-style:none;display:flex;flex-direction:column;gap:0}
+  .tl-steps li{
+    display:flex;gap:11px;font-size:13.4px;color:var(--fg-dim);position:relative;padding-bottom:12px;
+  }
+  .tl-steps li:last-child{padding-bottom:0}
+  .tl-steps li::before{
+    content:"";position:absolute;left:5px;top:14px;bottom:0;width:1px;background:var(--line);
+  }
+  .tl-steps li:last-child::before{display:none}
+  .tl-steps .pt{
+    width:11px;height:11px;border-radius:50%;flex:none;margin-top:5px;
+    background:var(--bg);border:1.5px solid var(--fg-mute);position:relative;z-index:1;
+  }
+  .tl-steps li.done .pt{border-color:var(--cyan);background:var(--cyan);box-shadow:0 0 8px rgba(37,244,238,.55)}
+  .tl-steps li code{color:#8fd8ff}
+
+  /* ── 快速开始 ──────────────────────────── */
+  .term{
+    background:#0b0b10;border:1px solid var(--line-hi);border-radius:13px;overflow:hidden;
+  }
+  .term-bar{
+    display:flex;align-items:center;gap:7px;padding:11px 14px;
+    border-bottom:1px solid var(--line);background:rgba(255,255,255,.022);
+  }
+  .term-bar i{width:10px;height:10px;border-radius:50%;background:#33333d;flex:none}
+  .term-bar i:nth-child(1){background:#ff5f57}
+  .term-bar i:nth-child(2){background:#febc2e}
+  .term-bar i:nth-child(3){background:#28c840}
+  .term-bar .t{margin-left:8px;font-family:var(--mono);font-size:11.5px;color:var(--fg-mute)}
+  .term-bar .cp{
+    margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--fg-dim);
+    background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:6px;
+    padding:3px 10px;cursor:pointer;transition:background .18s,color .18s;
+  }
+  .term-bar .cp:hover{background:rgba(255,255,255,.11);color:var(--fg)}
+  .term pre{
+    padding:17px 18px;font-family:var(--mono);font-size:12.8px;line-height:1.85;
+    overflow-x:auto;color:#d5d6dc;
+  }
+  .term .cm{color:var(--fg-mute)}
+  .term .kw{color:#ff8ba2}
+  .term .st{color:#8fd8ff}
+  .term .fn{color:#ffcd85}
+
+  /* ── 文档索引 ──────────────────────────── */
+  .docs{display:flex;flex-direction:column;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+  .doc{
+    display:flex;align-items:center;gap:14px;padding:15px 20px;background:var(--bg-soft);
+    transition:background .18s;font-size:14px;
+  }
+  .doc:hover{background:var(--card-hi)}
+  .doc .no{
+    font-family:var(--mono);font-size:12px;color:var(--fg-mute);flex:none;width:22px;
+  }
+  .doc .ti{font-weight:600;flex:none;min-width:120px}
+  .doc .de{color:var(--fg-dim);font-size:13.2px;flex:1}
+  .doc .ar{color:var(--fg-mute);flex:none;transition:transform .18s}
+  .doc:hover .ar{transform:translateX(3px);color:var(--cyan)}
+
+  /* ── 页脚 ──────────────────────────────── */
+  footer{border-top:1px solid var(--line);padding:36px 0 48px;position:relative;z-index:1}
+  .ft{display:flex;gap:18px;flex-wrap:wrap;align-items:center;justify-content:space-between;font-size:12.8px;color:var(--fg-mute)}
+  .ft .tags{display:flex;gap:7px;flex-wrap:wrap}
+  .ft .tags span{
+    border:1px solid var(--line);border-radius:6px;padding:2px 9px;font-family:var(--mono);font-size:11px;
+  }
+  .ft a:hover{color:var(--cyan)}
+
+  /* ── 动画（渐进增强：仅在 JS 可用时才初始隐藏）── */
+  .js .rv{opacity:0;transform:translateY(18px);transition:opacity .62s cubic-bezier(.2,.7,.2,1),transform .62s cubic-bezier(.2,.7,.2,1)}
+  .js .rv.in{opacity:1;transform:none}
+  @media print{
+    .js .rv{opacity:1!important;transform:none!important}
+    .nav,#top,.bg{display:none}
+    body{background:#fff;color:#111}
+  }
+
+  #top{
+    position:fixed;right:22px;bottom:22px;z-index:60;width:40px;height:40px;border-radius:11px;
+    display:flex;align-items:center;justify-content:center;cursor:pointer;
+    background:rgba(20,20,25,.92);border:1px solid var(--line-hi);color:var(--fg-dim);
+    backdrop-filter:blur(10px);opacity:0;pointer-events:none;transition:opacity .3s,transform .2s;
+    font-size:16px;
+  }
+  #top.show{opacity:1;pointer-events:auto}
+  #top:hover{transform:translateY(-3px);color:var(--cyan)}
+
+  @media (max-width:860px){
+    .stats{grid-template-columns:repeat(2,1fr)}
+    .nav-links{display:none}
+    section{padding:60px 0}
+    .hero{padding:64px 0 44px}
+    .doc .de{display:none}
+  }
+  @media (max-width:560px){
+    .wrap{padding:0 18px}
+    .nav-in{padding:0 18px}
+    .flow{gap:4px}
+    .flow-node{min-width:0;padding:9px 13px;font-size:13px}
+    .flow-arrow{font-size:13px}
+    .arch{padding:22px 15px}
+    .tl-card{padding:18px}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none!important;transition:none!important}
+    .js .rv{opacity:1!important;transform:none!important}
+  }
+</style>
+</head>
+<body>
+
+<div class="bg">
+  <div class="bg-grid"></div>
+  <div class="bg-glow r"></div>
+  <div class="bg-glow c"></div>
+</div>
+
+<nav class="nav" id="nav">
+  <div class="nav-in">
+    <a class="logo" href="#top-anchor">
+      <span class="logo-mark"></span>
+      <span>自媒体脚本知识库</span>
+    </a>
+    <div class="nav-links" id="navlinks">
+      <a href="#features">功能</a>
+      <a href="#arch">架构</a>
+      <a href="#core">代码</a>
+      <a href="#auto">自动化</a>
+      <a href="#start">快速开始</a>
+      <a href="#docs">文档</a>
+    </div>
+  </div>
+</nav>
+
+<main id="top-anchor">
+
+  <!-- ══ Hero ══ -->
+  <section class="hero">
+    <div class="wrap">
+      <div class="badge rv"><span class="dot"></span>下载视频 → 转换音频 → 文案转写 · 全自动闭环</div>
+      <h1 class="rv">把抖音账号<br>变成<span class="grad">可检索的逐字稿知识库</span></h1>
+      <p class="sub rv">
+        一套跑在 Windows 本机的内容资产流水线。定时无人值守，
+        把若干抖音账号与指定合集的作品，自动变成 <b>结构化逐字稿</b>，
+        并同步归档到云盘。
+      </p>
+
+      <div class="flow rv">
+        <div class="flow-node n1"><span class="k">STEP 01</span><span class="v">下载视频</span></div>
+        <span class="flow-arrow">→</span>
+        <div class="flow-node n2"><span class="k">STEP 02</span><span class="v">转换音频</span></div>
+        <span class="flow-arrow">→</span>
+        <div class="flow-node n3"><span class="k">STEP 03</span><span class="v">文案转写</span></div>
+      </div>
+
+      <div class="cta rv">
+        <a class="btn btn-p" href="#start">看快速开始 <span>→</span></a>
+        <a class="btn btn-s" href="#docs">浏览 9 篇文档</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 统计 ══ -->
+  <section class="stats-sec">
+    <div class="wrap">
+      <div class="stats rv">
+        <div class="stat"><div class="num" data-to="8">0</div><div class="lbl">账号 / 合集</div><div class="sub">UID* + MID*</div></div>
+        <div class="stat"><div class="num" data-to="1010">0</div><div class="lbl">采集作品</div><div class="sub">去重后 · CSV 权威</div></div>
+        <div class="stat"><div class="num" data-to="994">0</div><div class="lbl">音轨 m4a</div><div class="sub">长期留存形态</div></div>
+        <div class="stat"><div class="num" data-to="2196">0</div><div class="lbl">云端归档文件</div><div class="sub">8797 MB · 0 失败</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 功能 ══ -->
+  <section id="features">
+    <div class="wrap">
+      <div class="sec-head rv">
+        <div class="eyebrow">Features</div>
+        <h2>三段主线，加上一整套工程增强</h2>
+        <p class="lead">
+          核心只有三步，但要在无人值守下稳定跑几万次，需要解决的问题远不止三步。
+          下面 14 项能力覆盖从采集到归档的完整闭环。
+        </p>
+      </div>
+
+      <!-- 下载视频 -->
+      <div class="group g1 rv">
+        <div class="group-h">
+          <span class="chip">01</span>
+          <span class="t">下载视频</span>
+          <span class="n">采集侧 · D:\视频\自媒体视频库</span>
+        </div>
+        <div class="cards">
+          <div class="card">
+            <div class="ct"><h3>账号增量采集</h3></div>
+            <p>批量下载 N 个抖音账号的全部作品，原画质。工具自带的 DB + 文件双重判断让增量天然成立，无需额外维护状态。</p>
+            <div class="file"><b>_pipeline.py</b> · 两阶段试水 + 自动改名</div>
+          </div>
+          <div class="card">
+            <div class="ct"><h3>合集采集</h3></div>
+            <p>按 collection 链接采集指定合集，长播客单文件可达 1GB+。跑完自动恢复配置，不会污染次日任务。</p>
+            <div class="file"><b>_dl_mix.py</b> · 临时切 run_command 后还原</div>
+          </div>
+          <div class="card">
+            <div class="ct"><h3>新账号快速入库</h3></div>
+            <p>只拉 30 列元数据清单与封面，不下载视频。有了清单，后续才能按需「只下音频」。</p>
+            <div class="file"><b>_acct_fetch.py</b> · CSV 按作品ID 去重可反复跑</div>
+          </div>
+          <div class="card">
+            <div class="ct"><h3>磁盘闸门</h3></div>
+            <p>空间不足时先回收残留 mp4 再复测；仍不足则整轮跳过并退出码 2，绝不让磁盘写满导致数据不一致。</p>
+            <div class="file"><b>ensure_space()</b> · MIN_FREE_GB 默认 20</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 转换音频 -->
+      <div class="group g2 rv">
+        <div class="group-h">
+          <span class="chip">02</span>
+          <span class="t">转换音频</span>
+          <span class="n">抽流 / 直下</span>
+        </div>
+        <div class="cards">
+          <div class="card">
+            <div class="ct"><h3>视频转音频</h3></div>
+            <p>优先无损抽流（<code>-c:a copy</code>，秒级），失败再重编码 64k 单声道兜底。先写临时文件再原子替换，不留半成品。</p>
+            <div class="file"><b>_to_audio.py</b> · 实测体积降至约 1/8</div>
+          </div>
+          <div class="card">
+            <div class="ct"><h3>音频直下</h3></div>
+            <p>绕过视频，直接从接口的纯音频档拉音轨，省掉「下视频→抽音轨→删视频」整步。含限流退避与最小 mp4 兜底。</p>
+            <div class="file"><b>_audio_direct.py</b> · 4h 播客 668MB → 81.8MB</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 文案转写 -->
+      <div class="group g3 rv">
+        <div class="group-h">
+          <span class="chip">03</span>
+          <span class="t">文案转写</span>
+          <span class="n">知识侧 · D:\视频\媒体知识库</span>
+        </div>
+        <div class="cards">
+          <div class="card">
+            <div class="ct"><h3>ASR 转写 + LLM 摘要</h3></div>
+            <p>本地 ASR 服务转出逐字稿，再由 LLM 生成 4 个关键词与结构化内容总结。总结只依据逐字稿真实内容，严禁按标题脑补。</p>
+            <div class="file"><b>asr_batch.py</b> · stage1 转写 / stage2 渲染</div>
+          </div>
+          <div class="card">
+            <div class="ct"><h3>长视频切段拼接</h3></div>
+            <p>时长 ≥ 20 分钟自动切片，每段独立落盘与登记。中途崩溃只重跑未完成的段，已完成段永久复用。</p>
+            <div class="file"><b>_seg_for()</b> · 段数 ceil(dur/900)</div>
+          </div>
+          <div class="card">
+            <div class="ct"><h3>实时看板</h3></div>
+            <p>看板自算进度（服务端状态码形同没有），显示当前条目、真实耗时与引擎逐词流式输出。</p>
+            <div class="file"><b>webui.py</b> · :8770 局域网可访问</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 工程增强 -->
+      <div class="group g4 rv">
+        <div class="group-h">
+          <span class="chip">04</span>
+          <span class="t">工程增强</span>
+          <span class="n">让上面三段能长期稳定跑</span>
+        </div>
+        <div class="cards">
+          <div class="card">
+            <div class="ct"><h3>命名规范化</h3></div>
+            <p>统一为 <code>日期_昵称_作品ID.ext</code>，键唯一且稳定。依据 CSV 映射，多 ID 歧义与无映射一律跳过不猜。</p>
+            <div class="file"><b>_rename.py</b> · 双前缀匹配合集特例</div>
+          </div>
+          <div class="card">
+            <div class="ct"><h3>封面三级兜底补齐</h3></div>
+            <p>CSV 静态封面 → CSV 动态封面 → Detail 接口 images / video.cover。图集只有序号图时自动补一份标准名。</p>
+            <div class="file"><b>_cover_audit_fix.py</b> · --check 只报告</div>
+          </div>
+          <div class="card">
+            <div class="ct"><h3>数据双向自愈</h3></div>
+            <p>一个方向删记录放行重下，另一个方向补记录防止重下。两者相容且必须成对使用，终检要求同时归零。</p>
+            <div class="file"><b>_repair.py</b> + <b>_seed_done.py</b> · 双 0 终检</div>
+          </div>
+          <div class="card">
+            <div class="ct"><h3>云端增量归档</h3></div>
+            <p>经本地 alist 把新增音轨与封面增量推到夸克网盘。SQLite 状态库记录已传文件，中断续传、重复跑幂等。</p>
+            <div class="file"><b>_upload_alist.py</b> · --jobs 3 ≈ 67 文件/分</div>
+          </div>
+          <div class="card">
+            <div class="ct"><h3>每日自动化</h3></div>
+            <p>18:00 采集链 + 20:00 归档链，跑完自检并要求双 0。两条链路刻意错开两小时，避免上传到正在变动的文件。</p>
+            <div class="file"><b>automation</b> · 约 19:05 结束</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 架构 ══ -->
+  <section id="arch">
+    <div class="wrap">
+      <div class="sec-head rv">
+        <div class="eyebrow">Architecture</div>
+        <h2>两库分离，一切以 CSV 为准</h2>
+        <p class="lead">
+          采集侧可以粗暴地重建、删文件；知识侧（逐字稿）是只增不删的核心资产。
+          文件系统状态只是元数据 CSV 的投影，两者的漂移由自愈脚本负责收敛。
+        </p>
+      </div>
+
+      <div class="arch rv">
+        <div class="arch-row">
+          <div class="arch-box dim">
+            <div class="k">SOURCE</div>
+            <div class="v">抖音账号 / 合集</div>
+            <div class="d">主页链接或 sec_uid</div>
+          </div>
+          <div class="arch-box red">
+            <div class="k">STEP 01 · 采集侧</div>
+            <div class="v">作品原片 .mp4</div>
+            <div class="d">原画质下载 · 增量去重 · 磁盘闸门</div>
+          </div>
+          <div class="arch-box amber">
+            <div class="k">STEP 02</div>
+            <div class="v">纯音轨 .m4a</div>
+            <div class="d">无损抽流 · 或音频直下跳过视频</div>
+          </div>
+          <div class="arch-box cyan">
+            <div class="k">STEP 03 · 知识侧</div>
+            <div class="v">逐字稿 .md</div>
+            <div class="d">ASR 转写 + LLM 摘要 + 同名封面</div>
+          </div>
+        </div>
+
+        <div class="arch-arrow">↓</div>
+
+        <div class="arch-row">
+          <div class="arch-box violet">
+            <div class="k">CATALOG</div>
+            <div class="v">Data/*.csv</div>
+            <div class="d">30 列元数据 · <strong>权威来源</strong> · 贯穿全程</div>
+          </div>
+          <div class="arch-box violet">
+            <div class="k">COVER</div>
+            <div class="v">封面图</div>
+            <div class="d">采集时同步下载 · 与 md 同名存放</div>
+          </div>
+          <div class="arch-box violet">
+            <div class="k">VERIFY</div>
+            <div class="v">一致性自愈</div>
+            <div class="d">幽灵记录 / 孤儿缓存 / 双 0 终检</div>
+          </div>
+          <div class="arch-box violet">
+            <div class="k">ARCHIVE</div>
+            <div class="v">夸克网盘</div>
+            <div class="d">经本地 alist 增量上传</div>
+          </div>
+        </div>
+
+        <div class="arch-note">
+          常驻服务：ASR 转写 :8766（Windows 服务托管）· 转写看板 :8770 · alist :5244
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 核心代码 ══ -->
+  <section id="core">
+    <div class="wrap">
+      <div class="sec-head rv">
+        <div class="eyebrow">Core Code</div>
+        <h2>16 个核心脚本，按阶段归位</h2>
+        <p class="lead">
+          <code>core/</code> 是实盘脚本的快照副本，实盘才是唯一编辑入口。
+          凭据一律只放脱敏模板，同步脚本内置敏感串黑名单，命中即拒绝写入。
+        </p>
+      </div>
+
+      <div class="core-grid rv">
+        <div class="core-dir">
+          <div class="h"><span class="ic"></span><code>01-download/</code><span class="cn">5</span></div>
+          <ul>
+            <li>_pipeline.py <span>账号采集主编排</span></li>
+            <li>_dl_mix.py <span>合集采集</span></li>
+            <li>_acct_fetch.py <span>新账号入库</span></li>
+            <li>_tk_auth.py <span>鉴权参数注入</span></li>
+            <li>_audio_direct.py <span>音频直下</span></li>
+          </ul>
+        </div>
+        <div class="core-dir">
+          <div class="h"><span class="ic"></span><code>02-audio/</code><span class="cn">1</span></div>
+          <ul>
+            <li>_to_audio.py <span>抽流 + 重编码兜底</span></li>
+          </ul>
+        </div>
+        <div class="core-dir">
+          <div class="h"><span class="ic"></span><code>03-asr/</code><span class="cn">2</span></div>
+          <ul>
+            <li>lib_source.py <span>数据源适配层</span></li>
+            <li>_stage2_daemon.py <span>渲染守护</span></li>
+          </ul>
+        </div>
+        <div class="core-dir">
+          <div class="h"><span class="ic"></span><code>04-maintain/</code><span class="cn">5</span></div>
+          <ul>
+            <li>_rename.py <span>命名规范化</span></li>
+            <li>_repair.py <span>清幽灵记录</span></li>
+            <li>_seed_done.py <span>回填下载记录</span></li>
+            <li>_cover_audit_fix.py <span>封面补齐</span></li>
+            <li>_mix_verify.py <span>合集核验</span></li>
+          </ul>
+        </div>
+        <div class="core-dir">
+          <div class="h"><span class="ic"></span><code>05-cloud/</code><span class="cn">2</span></div>
+          <ul>
+            <li>_alist.py <span>alist 客户端</span></li>
+            <li>_upload_alist.py <span>增量上传器</span></li>
+          </ul>
+        </div>
+        <div class="core-dir">
+          <div class="h"><span class="ic"></span><code>06-tools/</code><span class="cn">1</span></div>
+          <ul>
+            <li>_run_cap.py <span>子进程输出捕获</span></li>
+          </ul>
+        </div>
+        <div class="core-dir">
+          <div class="h"><span class="ic"></span><code>00-config/</code><span class="cn">模板</span></div>
+          <ul>
+            <li>settings.example.json <span>工具配置</span></li>
+            <li>alist.example.json <span>连接信息</span></li>
+            <li>llm_config.example.sh <span>环境变量</span></li>
+            <li>skip_ids.example.json <span>永久跳过名单</span></li>
+          </ul>
+        </div>
+        <div class="core-dir">
+          <div class="h"><span class="ic"></span><code>_sync_core.py</code><span class="cn">同步</span></div>
+          <ul>
+            <li>--apply <span>覆盖同步快照</span></li>
+            <li>--check <span>CI 一致性校验</span></li>
+            <li>内置 7 条敏感串黑名单 <span>命中即拒绝写入</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 自动化 ══ -->
+  <section id="auto">
+    <div class="wrap">
+      <div class="sec-head rv">
+        <div class="eyebrow">Daily Automation</div>
+        <h2>每天两轮，跑完自检「双 0」</h2>
+        <p class="lead">
+          单方向检查一定会漏。终检要求「有记录无文件」与「有文件无记录」两个计数同时归零，
+          才说明下载库与磁盘真正一致。
+        </p>
+      </div>
+
+      <div class="timeline rv">
+        <div class="tl-card">
+          <div class="tl-time">18:00</div>
+          <div class="tl-name">采集链 · 约 19:05 结束</div>
+          <ul class="tl-steps">
+            <li class="done"><span class="pt"></span><span>磁盘预检，不足则先回收残留 mp4</span></li>
+            <li class="done"><span class="pt"></span><span><code>_repair.py --apply</code> 把缺失文件的作品放行重下</span></li>
+            <li class="done"><span class="pt"></span><span><code>_pipeline.py</code> 账号增量采集</span></li>
+            <li class="done"><span class="pt"></span><span><code>_dl_mix.py</code> 合集增量采集</span></li>
+            <li class="done"><span class="pt"></span><span><code>_to_audio.py --delete</code> 转音频并回收磁盘</span></li>
+            <li class="done"><span class="pt"></span><span><code>_seed_done.py --apply</code> 回填下载记录</span></li>
+            <li class="done"><span class="pt"></span><span><code>_cover_audit_fix.py</code> 封面审计补齐</span></li>
+            <li class="done"><span class="pt"></span><span>双 0 终检 → 汇报</span></li>
+          </ul>
+        </div>
+        <div class="tl-card">
+          <div class="tl-time">20:00</div>
+          <div class="tl-name">归档链 · 增量上传夸克网盘</div>
+          <ul class="tl-steps">
+            <li class="done"><span class="pt"></span><span>冷却 15 分钟，跳过刚写入的文件</span></li>
+            <li class="done"><span class="pt"></span><span><code>_upload_alist.py --apply --jobs 3</code></span></li>
+            <li class="done"><span class="pt"></span><span>单次限时 540 秒，循环最多 6 次</span></li>
+            <li class="done"><span class="pt"></span><span>脚本天然续传，中断后再跑即接着传</span></li>
+            <li class="done"><span class="pt"></span><span>按目录强刷列表比对体积，而不是逐文件回查</span></li>
+          </ul>
+          <div class="arch-note" style="text-align:left;margin-top:14px">
+            刻意与采集链错开 2 小时 —— 采集链会重下封面并删重复文件，并行上传会传到半成品。
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 快速开始 ══ -->
+  <section id="start">
+    <div class="wrap">
+      <div class="sec-head rv">
+        <div class="eyebrow">Quick Start</div>
+        <h2>一轮完整链路</h2>
+        <p class="lead">环境：Windows 10/11 · Python 3.10+ · ffmpeg。采集侧需要一个抖音网页版 Cookie。</p>
+      </div>
+
+      <div class="term rv">
+        <div class="term-bar">
+          <i></i><i></i><i></i>
+          <span class="t">采集侧 · D:\视频\自媒体视频库</span>
+          <span class="cp" data-copy="cd /d D:\视频\自媒体视频库
+
+python _tools\TikTokDownloader\_repair.py --apply
+python _tools\TikTokDownloader\_pipeline.py
+python _dl_mix.py
+python _to_audio.py --delete
+python _seed_done.py --apply
+python _cover_audit_fix.py">复制</span>
+        </div>
+<pre><span class="cm"># 进入采集侧工作目录</span>
+cd /d D:\视频\自媒体视频库
+
+<span class="cm"># ① 先修数据：把「有记录但文件缺失」的作品放行重下</span>
+<span class="fn">python</span> _tools\TikTokDownloader\_repair.py --apply
+
+<span class="cm"># ② 账号增量采集（含磁盘闸门与自动改名）</span>
+<span class="fn">python</span> _tools\TikTokDownloader\_pipeline.py
+
+<span class="cm"># ③ 合集增量采集</span>
+<span class="fn">python</span> _dl_mix.py
+
+<span class="cm"># ④ mp4 → m4a 并删除源视频回收磁盘</span>
+<span class="fn">python</span> _to_audio.py --delete
+
+<span class="cm"># ⑤ 已落盘作品回填下载库，防止次日重复下载</span>
+<span class="fn">python</span> _seed_done.py --apply
+
+<span class="cm"># ⑥ 封面审计 + 三级兜底补齐</span>
+<span class="fn">python</span> _cover_audit_fix.py</pre>
+      </div>
+
+      <div class="term rv" style="margin-top:16px">
+        <div class="term-bar">
+          <i></i><i></i><i></i>
+          <span class="t">知识侧 · D:\视频\媒体知识库</span>
+          <span class="cp" data-copy="cd /d D:\视频\媒体知识库
+set WB_SOURCE=lib
+python asr_batch.py stage1
+python _stage2_daemon.py">复制</span>
+        </div>
+<pre><span class="cm"># 数据源固定指向采集侧</span>
+cd /d D:\视频\媒体知识库
+<span class="fn">set</span> <span class="st">WB_SOURCE</span>=lib
+
+<span class="cm"># 转写（长视频自动切片；只转写、不渲染 md）</span>
+<span class="fn">python</span> asr_batch.py stage1
+
+<span class="cm"># 渲染 md（关键词 + LLM 总结 + 复制封面），另开一个进程</span>
+<span class="fn">python</span> _stage2_daemon.py</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 文档 ══ -->
+  <section id="docs">
+    <div class="wrap">
+      <div class="sec-head rv">
+        <div class="eyebrow">Documents</div>
+        <h2>9 篇文档，含一份完整的踩坑索引</h2>
+        <p class="lead">每一条坑都按「症状 → 根因 → 修法」写清楚，并标注所在脚本。</p>
+      </div>
+
+      <div class="docs rv">
+        <a class="doc" href="docs/01-架构总览.md"><span class="no">01</span><span class="ti">架构总览</span><span class="de">两库分离、端到端数据流、关键设计取舍</span><span class="ar">→</span></a>
+        <a class="doc" href="docs/02-下载视频.md"><span class="no">02</span><span class="ti">下载视频</span><span class="de">三种采集方式、增量机制、分页风控修复</span><span class="ar">→</span></a>
+        <a class="doc" href="docs/03-转换音频.md"><span class="no">03</span><span class="ti">转换音频</span><span class="de">抽流策略、音频直下、回退与体积对比</span><span class="ar">→</span></a>
+        <a class="doc" href="docs/04-文案转写.md"><span class="no">04</span><span class="ti">文案转写</span><span class="de">ASR 接口、切片拼接、注册表并发约定、看板原理</span><span class="ar">→</span></a>
+        <a class="doc" href="docs/05-命名与封面.md"><span class="no">05</span><span class="ti">命名与封面</span><span class="de">命名规范、双前缀匹配陷阱、封面三级兜底</span><span class="ar">→</span></a>
+        <a class="doc" href="docs/06-数据校验与自愈.md"><span class="no">06</span><span class="ti">数据校验与自愈</span><span class="de">幽灵记录、孤儿缓存、双 0 终检口径</span><span class="ar">→</span></a>
+        <a class="doc" href="docs/07-云端归档.md"><span class="no">07</span><span class="ti">云端归档</span><span class="de">alist 令牌认证、上传协议、目录缓存陷阱</span><span class="ar">→</span></a>
+        <a class="doc" href="docs/08-每日自动化.md"><span class="no">08</span><span class="ti">每日自动化</span><span class="de">两条链路的完整命令与失败处置</span><span class="ar">→</span></a>
+        <a class="doc" href="docs/09-踩坑与排障.md"><span class="no">09</span><span class="ti">踩坑与排障</span><span class="de">A~G 七类共 30+ 条实战坑位索引</span><span class="ar">→</span></a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap ft">
+    <div class="tags">
+      <span>Windows</span>
+      <span>Python 3.10+</span>
+      <span>ffmpeg</span>
+      <span>ASR</span>
+      <span>SQLite</span>
+      <span>alist</span>
+      <span>MIT</span>
+    </div>
+    <div>
+      仅含自有编排代码与文档 · 不含任何 Cookie / 令牌 / API Key ·
+      <span style="color:var(--fg-dim)">请仅用于获得授权的内容归档与学习研究</span>
+    </div>
+  </div>
+</footer>
+
+<div id="top" title="回到顶部">↑</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* 导航显隐 + 滚动高亮 */
+  var nav = document.getElementById('nav');
+  var links = Array.prototype.slice.call(document.querySelectorAll('#navlinks a'));
+  var tops = document.getElementById('top');
+
+  function onScroll(){
+    var y = window.scrollY || window.pageYOffset;
+    nav.classList.toggle('on', y > 8);
+    tops.classList.toggle('show', y > 600);
+  }
+  window.addEventListener('scroll', onScroll, {passive:true});
+  onScroll();
+
+  /* 分区高亮 */
+  var sections = links.map(function(a){
+    var id = a.getAttribute('href').slice(1);
+    return {a:a, el:document.getElementById(id)};
+  }).filter(function(o){ return o.el; });
+
+  if('IntersectionObserver' in window){
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if(!e.isIntersecting) return;
+        sections.forEach(function(s){
+          s.a.classList.toggle('cur', s.el === e.target);
+        });
+      });
+    }, {rootMargin:'-45% 0px -50% 0px', threshold:0});
+    sections.forEach(function(s){ io.observe(s.el); });
+  }
+
+  /* 滚动淡入 */
+  var rv = Array.prototype.slice.call(document.querySelectorAll('.rv'));
+  if('IntersectionObserver' in window){
+    var io2 = new IntersectionObserver(function(entries){
+      entries.forEach(function(e, i){
+        if(!e.isIntersecting) return;
+        var el = e.target;
+        io2.unobserve(el);
+        var delay = Math.min(i * 60, 240);
+        setTimeout(function(){ el.classList.add('in'); }, delay);
+      });
+    }, {rootMargin:'0px 0px -8% 0px', threshold:.08});
+    rv.forEach(function(el){ io2.observe(el); });
+  } else {
+    rv.forEach(function(el){ el.classList.add('in'); });
+  }
+
+  /* 数字滚动 */
+  var nums = Array.prototype.slice.call(document.querySelectorAll('.num[data-to]'));
+  function countUp(el){
+    var to = parseInt(el.getAttribute('data-to'), 10) || 0;
+    var dur = 1100, t0 = null;
+    function step(ts){
+      if(t0 === null) t0 = ts;
+      var p = Math.min((ts - t0) / dur, 1);
+      var eased = 1 - Math.pow(1 - p, 3);
+      el.textContent = Math.round(to * eased).toLocaleString('en-US');
+      if(p < 1) requestAnimationFrame(step);
+      else el.textContent = to.toLocaleString('en-US');
+    }
+    requestAnimationFrame(step);
+  }
+  if('IntersectionObserver' in window){
+    var io3 = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if(!e.isIntersecting) return;
+        io3.unobserve(e.target);
+        countUp(e.target);
+      });
+    }, {threshold:.5});
+    nums.forEach(function(el){ io3.observe(el); });
+  } else {
+    nums.forEach(function(el){ el.textContent = el.getAttribute('data-to'); });
+  }
+
+  /* 复制按钮 */
+  Array.prototype.slice.call(document.querySelectorAll('.cp')).forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var text = btn.getAttribute('data-copy') || '';
+      var old = btn.textContent;
+      function ok(){
+        btn.textContent = '已复制';
+        btn.style.color = 'var(--cyan)';
+        setTimeout(function(){ btn.textContent = old; btn.style.color = ''; }, 1600);
+      }
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(ok, function(){ fallback(text, ok); });
+      } else {
+        fallback(text, ok);
+      }
+    });
+  });
+
+  function fallback(text, ok){
+    try{
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly','');
+      ta.style.position = 'fixed';
+      ta.style.top = '-1000px';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      ok();
+    }catch(e){
+      window.prompt('手动复制下面的命令：', text);
+    }
+  }
+
+  /* 回到顶部 */
+  tops.addEventListener('click', function(){
+    window.scrollTo({top:0, behavior:'smooth'});
+  });
+
+  /* 锚点平滑滚动（补齐无 scroll-behavior 的浏览器） */
+  Array.prototype.slice.call(document.querySelectorAll('a[href^="#"]')).forEach(function(a){
+    a.addEventListener('click', function(ev){
+      var id = a.getAttribute('href');
+      if(id === '#' || id === '#top-anchor') return;
+      var el = document.querySelector(id);
+      if(!el) return;
+      ev.preventDefault();
+      var top = el.getBoundingClientRect().top + window.pageYOffset - 72;
+      window.scrollTo({top: top, behavior:'smooth'});
+    });
+  });
+})();
+</script>
+</body>
+</html>
