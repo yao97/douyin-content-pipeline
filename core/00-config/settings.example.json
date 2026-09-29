@@ -1,0 +1,76 @@
+{
+    "root": "D:\\视频\\自媒体视频库",
+    "cookie": "<在此粘贴抖音网页版 Cookie>",
+    "run_command": "5 1 1 Q",
+    "name_format": "create_time type nickname desc",
+    "folder_mode": false,
+    "music": false,
+    "static_cover": true,
+    "dynamic_cover": false,
+    "download": true,
+    "original_quality": false,
+    "max_pages": 0,
+    "max_retry": 5,
+    "timeout": 10,
+    "storage_format": "csv",
+    "proxy": "",
+    "douyin_platform": true,
+    "tiktok_platform": false,
+    "accounts_urls": [
+        {
+            "mark": "",
+            "url": "https://www.douyin.com/user/<SEC_UID>/",
+            "tab": "post",
+            "earliest": "",
+            "latest": "",
+            "enable": true
+        }
+    ],
+    "accounts_urls_tiktok": [
+        {
+            "mark": "",
+            "url": "",
+            "tab": "post",
+            "earliest": "",
+            "latest": "",
+            "enable": false
+        }
+    ],
+    "mix_urls": [
+        {
+            "mark": "",
+            "url": "https://www.douyin.com/collection/<合集ID>/1",
+            "enable": true
+        }
+    ],
+    "mix_urls_tiktok": [
+        {
+            "mark": "",
+            "url": "",
+            "enable": false
+        }
+    ],
+    "owner_url": {
+        "mark": "",
+        "url": "",
+        "tab": "post",
+        "earliest": "",
+        "latest": ""
+    },
+    "owner_url_tiktok": null,
+    "cookie_tiktok": "",
+    "proxy_tiktok": "",
+    "twc_tiktok": "",
+    "folder_name": "Download",
+    "desc_length": 64,
+    "name_length": 128,
+    "date_format": "%Y-%m-%d %H:%M:%S",
+    "split": "-",
+    "truncate": 50,
+    "max_size": 0,
+    "chunk": 2097152,
+    "ffmpeg": "",
+    "live_qualities": "",
+    "browser_info": {},
+    "browser_info_tiktok": {}
+}

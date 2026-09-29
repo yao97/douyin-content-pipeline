@@ -1,0 +1,35 @@
+MIT License
+
+Copyright (c) 2026 yao97
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+许可范围说明
+------------
+
+本许可仅覆盖本仓库中的自有编排代码与文档。
+
+本仓库**不包含**任何第三方工具的源代码。流水线依赖的
+TikTokDownloader (https://github.com/JoeanAmier/TikTokDownloader)
+采用 GPL-3.0 许可，需自行获取并遵守其许可条款。
+
+本仓库不含任何 Cookie、令牌、API Key 等凭据；所有凭据均由脚本从
+工作目录之外的配置文件读取，且被 .gitignore 排除。

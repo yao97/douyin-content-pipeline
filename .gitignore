@@ -1,0 +1,66 @@
+# ── 凭据 / 密钥（绝不入库）──────────────────────────────────
+_tools/_secrets/
+_secrets/
+*.cookie
+cookie*.json
+*_cookie*.json
+settings.json
+alist.json
+_llm_config.sh
+.env
+.env.*
+
+# ── 运行期产物 ─────────────────────────────────────────────
+*.log
+*_log.txt
+*_out*.txt
+_out.txt
+_status*.txt
+_ps*.txt
+_app_log*.txt
+
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# 上传/下载状态与锁
+_upload_state.*
+_upload_state.lock
+_download_state.*
+*.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 媒体文件（仓库只放代码与文档）
+*.mp4
+*.m4a
+*.mp3
+*.wav
+*.flac
+*.mkv
+*.webm
+
+# 大体积数据
+Data/
+Volume/
+_slice_tmp/
+_Cache/
+Cache/
+temp/

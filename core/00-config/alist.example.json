@@ -1,0 +1,4 @@
+{
+    "url": "http://127.0.0.1:5244",
+    "token": "<alist 全局 API 令牌，取自 x_setting_items(key='token')>"
+}
