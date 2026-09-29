@@ -1,0 +1,216 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  抖音自媒体内容流水线 —— 整条链容器编排
+#
+#     采集视频  →  转换音频  →  文案转写  →  云端归档
+#     harvest      _to_audio    asr_batch    _upload_alist
+#                               _stage2_daemon
+#
+#  服务分层：
+#    · 常驻（默认起）      webui                实时看板 :8770
+#    · 定时（profile cron）scheduler            容器内按 18:00 / 19:05 / 20:00 跑整条链
+#    · 单步（profile job） harvest / transcribe / render / upload / repair / audio ...
+#    · 可选（profile cloud）alist               容器内 alist（默认改用宿主机那个）
+#    · 可选（profile llm） ollama               本地 LLM（默认走云端 SiliconFlow）
+#
+#  常用命令（在 deploy/docker 目录下）：
+#    cp .env.example .env
+#    docker compose up -d                                  # 只看板
+#    docker compose --profile cron up -d                   # 看板 + 容器内定时
+#    docker compose --profile job run --rm harvest         # 手动跑一次采集
+#    docker compose --profile job run --rm transcribe      # 手动跑一次转写
+#    docker compose --profile job run --rm upload          # 手动跑一次上传
+#    docker compose run --rm selftest                      # 自检（推荐首次执行）
+#
+#  ⚠ 与宿主机既有的两条自动化（18:00 采集 / 20:00 上传）**只能二选一**，
+#    否则会并发写同一份 DB / 状态库。切到容器定时前请先停掉宿主机任务。
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: douyin-pipeline
+
+# ── 挂载：整套目录一次性给全，具体某步用不到也没关系（entrypoint 只校验本步必需的）──
+x-mounts: &mounts
+  - "${WB_HOST_VIDEO_LIB:-D:/视频/自媒体视频库}:${WB_VIDEO_LIB:-/mnt/video-lib}"
+  - "${WB_HOST_MEDIA_KB:-D:/视频/媒体知识库}:${WB_MEDIA_KB:-/mnt/media-kb}"
+  - "${WB_HOST_VIDEOS_DATA:-C:/Users/EDY/Videos/data}:${WB_VIDEOS_DATA:-/mnt/videos-data}:ro"
+  - "${WB_HOST_VCA_DIR:-C:/Users/EDY/Projects/video-analyzer}:${WB_VCA_DIR:-/mnt/vca}:ro"
+  - "${WB_HOST_ALIST_DIR:-D:/alist}:${WB_ALIST_DIR:-/mnt/alist}:ro"
+  - "${WB_HOST_KB_REPO:-D:/视频/自媒体脚本知识库}:${WB_KB_REPO:-/mnt/kb-repo}:ro"
+
+# ── 公共配置 ──
+x-common: &common
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      TZ: ${TZ:-Asia/Shanghai}
+  image: douyin-pipeline:${TAG:-5.8}
+  # 注：.env 由 compose 自动用于变量插值；容器内需要的变量一律在下面 environment 显式列出，
+  # 不额外挂 env_file（避免老版本 compose 对 required 字段不兼容）。
+  environment:
+    TZ: ${TZ:-Asia/Shanghai}
+    WB_SOURCE: ${WB_SOURCE:-lib}
+    WB_LLM_CONFIG_FILE: ${WB_LLM_CONFIG_FILE:-/mnt/media-kb/_llm_config.sh}
+    WB_RELAY_PORTS: ${WB_RELAY_PORTS:-8766,5244}
+    WB_RELAY_TARGET: ${WB_RELAY_TARGET:-host.docker.internal}
+    MIN_FREE_GB: ${MIN_FREE_GB:-20}
+  volumes: *mounts
+  # 容器内要访问宿主机的 ASR(8766) / alist(5244)
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  # 日志别无限涨
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+
+  # ── 自检：首次部署先跑它，会逐项检查挂载点、权限、兼容层、宿主服务可达性 ──
+  selftest:
+    <<: *common
+    profiles: ["job"]
+    restart: "no"
+    command: ["/opt/wb/scripts/wbctl.sh", "selftest"]
+
+  # ── 常驻：实时看板 ──
+  webui:
+    <<: *common
+    container_name: wb-webui
+    restart: unless-stopped
+    command: ["/opt/wb/scripts/wbctl.sh", "webui"]
+    ports:
+      - "${WB_UI_PORT:-8770}:${WB_UI_PORT:-8770}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${WB_UI_PORT:-8770}/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: ${WB_KB_MEM:-2g}
+
+  # ── 定时：容器内跑整条链（替代宿主机两条自动化）──
+  scheduler:
+    <<: *common
+    profiles: ["cron"]
+    container_name: wb-scheduler
+    restart: unless-stopped
+    command: ["/opt/wb/scripts/wbctl.sh", "scheduler"]
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      WB_SOURCE: ${WB_SOURCE:-lib}
+      WB_LLM_CONFIG_FILE: ${WB_LLM_CONFIG_FILE:-/mnt/media-kb/_llm_config.sh}
+      WB_RELAY_PORTS: ${WB_RELAY_PORTS:-8766,5244}
+      WB_RELAY_TARGET: ${WB_RELAY_TARGET:-host.docker.internal}
+      MIN_FREE_GB: ${MIN_FREE_GB:-20}
+      WB_SCHEDULE: ${WB_SCHEDULE:-18:00|harvest,19:05|transcribe,20:00|upload}
+      WB_SCHEDULE_JITTER: ${WB_SCHEDULE_JITTER:-0}
+    deploy:
+      resources:
+        limits:
+          memory: ${WB_KB_MEM:-2g}
+
+  # ── 单步任务（profile job）：docker compose --profile job run --rm <name> ──
+  harvest:
+    <<: *common
+    profiles: ["job"]
+    restart: "no"
+    command: ["/opt/wb/scripts/wbctl.sh", "harvest"]
+    deploy:
+      resources:
+        limits:
+          memory: ${WB_HARVEST_MEM:-2g}
+
+  transcribe:
+    <<: *common
+    profiles: ["job"]
+    restart: "no"
+    command: ["/opt/wb/scripts/wbctl.sh", "transcribe"]
+    deploy:
+      resources:
+        limits:
+          memory: ${WB_KB_MEM:-2g}
+
+  render:
+    <<: *common
+    profiles: ["job"]
+    restart: "no"
+    command: ["/opt/wb/scripts/wbctl.sh", "render"]
+    deploy:
+      resources:
+        limits:
+          memory: ${WB_KB_MEM:-2g}
+
+  repair:
+    <<: *common
+    profiles: ["job"]
+    restart: "no"
+    command: ["/opt/wb/scripts/wbctl.sh", "repair"]
+
+  audio:
+    <<: *common
+    profiles: ["job"]
+    restart: "no"
+    command: ["/opt/wb/scripts/wbctl.sh", "audio"]
+
+  seed:
+    <<: *common
+    profiles: ["job"]
+    restart: "no"
+    command: ["/opt/wb/scripts/wbctl.sh", "seed"]
+
+  covers:
+    <<: *common
+    profiles: ["job"]
+    restart: "no"
+    command: ["/opt/wb/scripts/wbctl.sh", "covers"]
+
+  mix:
+    <<: *common
+    profiles: ["job"]
+    restart: "no"
+    command: ["/opt/wb/scripts/wbctl.sh", "mix"]
+
+  upload:
+    <<: *common
+    profiles: ["job"]
+    restart: "no"
+    command: ["/opt/wb/scripts/wbctl.sh", "upload"]
+
+  # ── 可选：容器内 alist（默认关闭，改用宿主机 D:\alist 那个已配好夸克的实例）──
+  alist:
+    image: xhofe/alist:latest
+    container_name: wb-alist
+    profiles: ["cloud"]
+    restart: unless-stopped
+    volumes:
+      - alist-data:/opt/alist/data
+    ports:
+      - "${WB_ALIST_PORT:-5244}:5244"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── 可选：本地 LLM（默认关闭，走云端 SiliconFlow）──
+  ollama:
+    image: ollama/ollama:latest
+    container_name: wb-ollama
+    profiles: ["llm"]
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "${WB_OLLAMA_PORT:-11434}:11434"
+    deploy:
+      resources:
+        limits:
+          memory: ${WB_OLLAMA_MEM:-8g}
+
+volumes:
+  alist-data:
+  ollama-data:

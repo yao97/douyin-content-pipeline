@@ -106,7 +106,14 @@ flowchart TD
 │   ├── 06-数据校验与自愈.md       幽灵记录、孤儿缓存、双 0 终检
 │   ├── 07-云端归档.md            alist 认证、上传协议、缓存陷阱
 │   ├── 08-每日自动化.md          两条自动化链路与失败处置
-│   └── 09-踩坑与排障.md          全部实战坑位与修法索引
+│   ├── 09-踩坑与排障.md          全部实战坑位与修法索引
+│   └── 10-Docker部署.md          容器化：架构、路径兼容层、迁移与回滚
+├── deploy/docker/                ★ Docker 部署套件（详见其 README）
+│   ├── Dockerfile               两阶段构建：运行时（Python/ffmpeg/socat），代码与数据 bind mount
+│   ├── docker-compose.yml       整条链编排（默认 / cron / job / cloud / llm 五种 profile）
+│   ├── wb_compat/               路径兼容层：让硬编码 Windows 路径的实盘脚本零改动跑在容器里
+│   ├── scripts/                 wbctl 调度入口 / 容器内定时 / 端口中继
+│   └── run.sh                   命令封装（init / check / up / dry / step / shell）
 └── core/                         核心代码快照（按阶段分目录）
     ├── 00-config/                脱敏配置模板
     ├── 01-download/              采集与直下
@@ -257,6 +264,8 @@ python _upload_alist.py --apply --jobs 3
 | [docs/07-云端归档.md](docs/07-云端归档.md) | alist 认证、上传协议、状态库、性能 |
 | [docs/08-每日自动化.md](docs/08-每日自动化.md) | 两条链路的完整命令与失败处置 |
 | [docs/09-踩坑与排障.md](docs/09-踩坑与排障.md) | 全部实战坑位索引 |
+| [docs/10-Docker部署.md](docs/10-Docker部署.md) | 容器化：架构、路径兼容层、定时迁移、回滚 |
+| [deploy/docker/README.md](deploy/docker/README.md) | Docker 套件完整说明（机制、已验证/未验证清单、排障表） |
 
 ---
 

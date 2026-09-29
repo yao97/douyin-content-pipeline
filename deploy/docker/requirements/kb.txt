@@ -1,0 +1,9 @@
+# 转写 / 渲染 / 看板侧依赖
+#
+# 注意：这里**不包含** whisper / torch —— 本方案的 ASR 推理由宿主机的
+# `VideoAnalyzer-Transcribe` 服务（127.0.0.1:8766，nssm 托管）承担，
+# 容器只做编排（asr_batch.py / _stage2_daemon.py / webui.py）。
+# 如果要在容器里跑推理，请改用 video-analyzer 自己的镜像（见 README「ASR 引擎三种放法」）。
+requests==2.32.5      # asr_batch.py / webui.py
+flask==3.1.2          # webui.py 看板
+markdown==3.9         # webui.py markdown 渲染

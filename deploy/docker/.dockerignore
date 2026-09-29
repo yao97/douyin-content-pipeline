@@ -1,0 +1,36 @@
+# 构建上下文排除规则
+#
+# 推荐构建方式（上下文就是本目录）：
+#     cd deploy/docker && docker compose build
+#
+# 本节同时兼容「以知识库仓库根为上下文」的写法：
+#     docker build -f deploy/docker/Dockerfile -t douyin-pipeline:5.8 .
+
+# ── 仓库里与运行时无关的内容（别打进镜像层）──
+docs/
+core/
+index.html
+LICENSE
+README.md
+_sync_core.py
+.git/
+.gitignore
+.gitattributes
+deploy/docker/README.md
+deploy/docker/run.sh
+
+# ── Python 产物 ──
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ── 运行期产物 ──
+*.log
+*.db
+*.sqlite*
+*.lock
+.env
+.env.*
+!requirements/*.txt

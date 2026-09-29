@@ -435,7 +435,7 @@
         <h2>三段主线，加上一整套工程增强</h2>
         <p class="lead">
           核心只有三步，但要在无人值守下稳定跑几万次，需要解决的问题远不止三步。
-          下面 14 项能力覆盖从采集到归档的完整闭环。
+          下面 15 项能力覆盖从采集到归档的完整闭环，并可整套容器化部署。
         </p>
       </div>
 
@@ -549,6 +549,11 @@
             <div class="ct"><h3>每日自动化</h3></div>
             <p>18:00 采集链 + 20:00 归档链，跑完自检并要求双 0。两条链路刻意错开两小时，避免上传到正在变动的文件。</p>
             <div class="file"><b>automation</b> · 约 19:05 结束</div>
+          </div>
+          <div class="card">
+            <div class="ct"><h3>整套容器化部署</h3></div>
+            <p>一条 compose 起停整条链。镜像只装运行时，代码与数据走挂载；靠一层路径兼容层让硬编码 Windows 路径的实盘脚本零改动跑进容器。</p>
+            <div class="file"><b>deploy/docker</b> · wb_compat + wbctl</div>
           </div>
         </div>
       </div>
@@ -819,7 +824,7 @@ cd /d D:\视频\媒体知识库
     <div class="wrap">
       <div class="sec-head rv">
         <div class="eyebrow">Documents</div>
-        <h2>9 篇文档，含一份完整的踩坑索引</h2>
+        <h2>10 篇文档，含完整的踩坑索引与容器部署</h2>
         <p class="lead">每一条坑都按「症状 → 根因 → 修法」写清楚，并标注所在脚本。</p>
       </div>
 
@@ -833,6 +838,7 @@ cd /d D:\视频\媒体知识库
         <a class="doc" href="docs/07-云端归档.md"><span class="no">07</span><span class="ti">云端归档</span><span class="de">alist 令牌认证、上传协议、目录缓存陷阱</span><span class="ar">→</span></a>
         <a class="doc" href="docs/08-每日自动化.md"><span class="no">08</span><span class="ti">每日自动化</span><span class="de">两条链路的完整命令与失败处置</span><span class="ar">→</span></a>
         <a class="doc" href="docs/09-踩坑与排障.md"><span class="no">09</span><span class="ti">踩坑与排障</span><span class="de">A~G 七类共 30+ 条实战坑位索引</span><span class="ar">→</span></a>
+        <a class="doc" href="docs/10-Docker部署.md"><span class="no">10</span><span class="ti">Docker 部署</span><span class="de">路径兼容层原理、端口中继、定时二选一与落地坑</span><span class="ar">→</span></a>
       </div>
     </div>
   </section>
