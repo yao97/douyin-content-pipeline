@@ -20,7 +20,7 @@
 | 3 | **新账号入库** | 只拉元数据清单（30 列 CSV）+ 封面，不下载视频 | `core/01-download/_acct_fetch.py` |
 | 4 | **音频直下** | 绕过视频，直接从接口拉纯音轨（省约 88% 体积） | `core/01-download/_audio_direct.py` |
 | 5 | **视频转音频** | mp4 → m4a 无损抽流，可选删除源视频 | `core/02-audio/_to_audio.py` |
-| 6 | **文案转写** | ASR 转写 → 逐字稿 + LLM 摘要 → md 知识库 | `core/03-asr/` · 主程序 `媒体知识库/asr_batch.py` |
+| 6 | **文案转写** | ASR 转写 → 逐字稿 + LLM 摘要 → md 知识库 | `core/03-asr/` · 主程序 `core/03-asr/asr_batch.py` |
 | 7 | **命名规范化** | 统一为 `{发布日期}_{账号昵称}_{作品ID}.ext` | `core/04-maintain/_rename.py` |
 | 8 | **封面审计补齐** | 三级兜底（CSV 静态 → CSV 动态 → Detail 接口）补齐缺失封面 | `core/04-maintain/_cover_audit_fix.py` |
 | 9 | **数据自愈** | 修复「库有记录但文件缺失」的幽灵记录 + 孤儿缓存 | `core/04-maintain/_repair.py` |
@@ -108,6 +108,7 @@ flowchart TD
 │   ├── 08-每日自动化.md          两条自动化链路与失败处置
 │   ├── 09-踩坑与排障.md          全部实战坑位与修法索引
 │   └── 10-Docker部署.md          容器化：架构、路径兼容层、迁移与回滚
+│   └── 11-跨机转写.md            把转写算力搬到另一台机器（不同网络，只回传 raw）
 ├── deploy/docker/                ★ Docker 部署套件（详见其 README）
 │   ├── Dockerfile               两阶段构建：运行时（Python/ffmpeg/socat），代码与数据 bind mount
 │   ├── docker-compose.yml       整条链编排（默认 / cron / job / cloud / llm 五种 profile）
@@ -118,7 +119,7 @@ flowchart TD
     ├── 00-config/                脱敏配置模板
     ├── 01-download/              采集与直下
     ├── 02-audio/                 音视频转换
-    ├── 03-asr/                   转写的接口层与渲染守护
+    ├── 03-asr/                   转写全链：主程序 / 数据源适配 / 渲染守护 / 跨机交接
     ├── 04-maintain/              命名 / 封面 / 数据自愈
     ├── 05-cloud/                 云端归档
     └── 06-tools/                 通用运行辅助
@@ -265,6 +266,7 @@ python _upload_alist.py --apply --jobs 3
 | [docs/08-每日自动化.md](docs/08-每日自动化.md) | 两条链路的完整命令与失败处置 |
 | [docs/09-踩坑与排障.md](docs/09-踩坑与排障.md) | 全部实战坑位索引 |
 | [docs/10-Docker部署.md](docs/10-Docker部署.md) | 容器化：架构、路径兼容层、定时迁移、回滚 |
+| [docs/11-跨机转写.md](docs/11-跨机转写.md) | 跨机转写：为什么只交 raw、外机部署清单（含 llama.cpp b8996 硬坑）、三步交接流程 |
 | [deploy/docker/README.md](deploy/docker/README.md) | Docker 套件完整说明（机制、已验证/未验证清单、排障表） |
 
 ---

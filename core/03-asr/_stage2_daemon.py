@@ -5,7 +5,9 @@
 - md 已含总结 → 跳过
 """
 import os, sys, json, time, shutil, re
-sys.path.insert(0, r"D:\视频\媒体知识库")
+# ⚠️ 用**自身所在目录**入 sys.path（原来是硬编码 r"D:\视频\媒体知识库"）——
+#    这样整个目录拷到第二台机器/别的盘符也能 import 到 asr_batch，不必改代码。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import asr_batch as B
 
 STAGE1_LOG = os.path.join(B.OUT_ROOT, "_asr_stage1.log")

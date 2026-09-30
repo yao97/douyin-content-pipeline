@@ -11,12 +11,16 @@
 """
 import os, re, csv, io, json, time
 
-LIB_ROOT = r"D:\视频\自媒体视频库"
+# ⚠️ 路径全部可用环境变量覆盖 —— 为了「同一套代码跑在第二台机器上」（跨机转写）。
+#    默认值 = 本机实盘，**行为零变化**；外机只要设 WB_LIB_ROOT / WB_FACTS 即可。
+LIB_ROOT = os.environ.get("WB_LIB_ROOT", r"D:\视频\自媒体视频库")
 IMG_EXT = (".jpeg", ".jpg", ".png", ".webp")
 VID_RE = re.compile(r"(\d{15,})")
 # 合集命名：`<YYYY-MM-DD HH.MM.SS>-<类型>-<账号>-<标题>`（**不带作品ID**，只能靠发布时间对号入座）
 TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})[ _](\d{2}\.\d{2}\.\d{2})")
-FACTS = r"C:\Users\EDY\Videos\data\.appdata\facts.json"
+# 抖音号(uniqueId) 映射来源；外机没有这个文件也能跑 —— 抖音号可由本机 `asr_batch.py syncmeta` 事后补
+# （它把源元数据同步进已落盘 raw，**不重转写**），所以跨机时外机只传 raw 回来即可。
+FACTS = os.environ.get("WB_FACTS", r"C:\Users\EDY\Videos\data\.appdata\facts.json")
 # 仍在写入的文件（mtime 太新）先不碰，避免把"下到一半"的 mp4 当成品去转写
 FRESH_SEC = float(os.environ.get("WB_LIB_FRESH_SEC", "120"))
 

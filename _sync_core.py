@@ -36,8 +36,15 @@ MAPPING = [
 
     (VIDEO_LIB / "_to_audio.py",   "core/02-audio/_to_audio.py"),
 
+    # ── 转写主程序（2026-09-30 起随仓库分发 —— 为了「跨机转写」：外机 clone 后能直接跑；
+    #    见 docs/11-跨机转写.md。之前只放了 lib_source/_stage2_daemon，导致外机拿不到主程序）──
+    (MEDIA_KB / "asr_batch.py",       "core/03-asr/asr_batch.py"),
     (MEDIA_KB / "lib_source.py",      "core/03-asr/lib_source.py"),
     (MEDIA_KB / "_stage2_daemon.py",  "core/03-asr/_stage2_daemon.py"),
+    (MEDIA_KB / "checkpoint.py",      "core/03-asr/checkpoint.py"),
+    (MEDIA_KB / "progress.py",        "core/03-asr/progress.py"),
+    (MEDIA_KB / "webui.py",           "core/03-asr/webui.py"),
+    (MEDIA_KB / "remote_handoff.py",  "core/03-asr/remote_handoff.py"),
 
     (VIDEO_LIB / "_rename.py",        "core/04-maintain/_rename.py"),
     (TOOL / "_repair.py",             "core/04-maintain/_repair.py"),

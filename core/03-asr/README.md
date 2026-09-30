@@ -1,34 +1,53 @@
 # 03-asr · 文案转写
 
-本目录只收录**与本流水线耦合度最高的两个文件**：
+本目录收录**转写链的全部代码**（2026-09-30 起补全，之前只放了两个文件）：
 
 | 文件 | 角色 |
 |---|---|
+| `asr_batch.py` | **转写主程序**。子命令：`stage1` / `stage2` / `registry` / `accept` / `retry` / `syncmeta` / `syncmd` / `slice` / `slice-all` |
 | `lib_source.py` | 数据源适配层：把 `自媒体视频库` 的文件系统翻译成转写任务列表 |
 | `_stage2_daemon.py` | 渲染守护：raw → md（关键词 + LLM 总结）+ 复制封面 |
-
----
-
-## 1. 转写主程序在哪里
-
-转写的编排主体在**另一个工作区** `D:\视频\媒体知识库`，未随本仓库分发：
-
-| 文件 | 说明 |
-|---|---|
-| `asr_batch.py` | 批处理编排。子命令：`stage1` / `stage2` / `registry` / `accept` / `retry` / `syncmeta` / `syncmd` / `slice` / `slice-all` |
+| `remote_handoff.py` | **跨机交接**：`export`（生成外机待转写清单）/ `import`（合入外机回传的 raw + 重建注册表）/ `status` |
 | `checkpoint.py` | 诊断 + 尽力拉起（尾行打 `ACTION:`） |
 | `progress.py` | 进度快照 |
 | `webui.py` | 实时看板（Flask，`:8770`） |
-| `verify_all.py` / `rename_covers.py` / `long_videos.py` | 校验与辅助 |
-| `_asr_registry.json` | 增量重跑的唯一依据 |
-| `_llm_config.sh` | 运行环境变量（**含明文密钥，不入版本库**） |
 
-ASR 引擎服务 `transcribe_server.py`（`:8766`）属于 `video-analyzer` 工程，
-由 Windows 服务 `VideoAnalyzer-Transcribe`（nssm）托管。
+> 这套代码同时是**实盘快照**：外机 `git clone` 下来配好环境变量即可直接跑，
+> 不用改代码 —— 所有本机路径都能用 `WB_*` 环境变量覆盖（见下）。
 
 ---
 
-## 2. 两个文件的职责边界
+## 1. 不在本仓库的东西（跑转写必须先具备）
+
+| 东西 | 说明 |
+|---|---|
+| `_asr_registry.json` | 增量重跑的**唯一真相**。不在仓库里，按机器各自持有；跨机时**只允许一个写者** |
+| `_llm_config.sh` | LLM 运行环境变量（**含明文密钥，不入版本库**）；模板见 `core/00-config/llm_config.example.sh` |
+| ASR 引擎 `transcribe_server.py`（`:8766`） | 属于 `video-analyzer` 工程，由 Windows 服务 `VideoAnalyzer-Transcribe`（nssm）托管 |
+| 模型 `qwen3_asr_models/`（3.8GB） | ASR 1.3G + Aligner 481M + int4 ONNX；获取方式见 `video-analyzer` 的 README |
+| `verify_all.py` / `rename_covers.py` / `long_videos.py` | 校验与辅助脚本，留在实盘工作区 |
+
+---
+
+## 1b. 在第二台机器上跑（跨机转写）
+
+完整流程见 [`docs/11-跨机转写.md`](../../docs/11-跨机转写.md)。要点：
+
+```bash
+# 外机：所有本机路径都用环境变量指过去，代码零改动
+set WB_SOURCE=lib
+set WB_OUT_ROOT=<外机的知识库目录>
+set WB_LIB_ROOT=<外机的视频库目录>
+set WB_FFMPEG=<外机 ffmpeg.exe>
+python asr_batch.py stage1          # 只产 _asr_raw/*.json
+```
+
+⚠️ **外机不要跑 `registry`、不要跑 `stage2`** —— 注册表与 md 的写者只能是本机，
+否则两台会互相覆盖（`_asr_registry.json` 整表回写会静默抹掉对方改动）。
+
+---
+
+## 2. 各文件的职责边界
 
 ### lib_source.py
 
