@@ -642,11 +642,48 @@ def build_task_list():
 SOURCE = os.environ.get("WB_SOURCE", "guanzhu")
 
 
+def _author_filter(tasks):
+    """按 `WB_ONLY_AUTHORS` / `WB_SKIP_AUTHORS` 过滤任务表（逗号分隔，作者名**子串**匹配）。
+
+    为什么必须有：外机与本机跑**同一份库**时必须切分，否则两边做同一批。
+    2026-10-01 实测：`export` 出的 327 条清单里，**310 条与本机当时未完成完全重叠**
+    （清单 ∩ 未完成 = 310/310）—— 两台机器做同一批活儿，先完成者的成果才作数
+    （回传合入时后到的那份被去重跳过），另一台就是**纯白烧**
+    （按本次口径 ≈ 3.6 天算力，切分后总工期从 86h 降到 ~53h）。
+
+    默认两者都为空 → **行为零变化**（与项目「本机路径全用 `WB_*` 覆盖、默认=本机原值」的约定一致）。
+    典型用法（外机已下好 4 个账号的源，本机专心跑超长合集）：
+      · 本机：`WB_SKIP_AUTHORS="魏远麟律师 广州,钦文和他的朋友们,识藏,播客正片合集"`
+      · 或外机：`WB_ONLY_AUTHORS="…"`（两台都设、或只设一台，效果等价）
+    """
+    only = [s.strip() for s in os.environ.get("WB_ONLY_AUTHORS", "").split(",") if s.strip()]
+    skip = [s.strip() for s in os.environ.get("WB_SKIP_AUTHORS", "").split(",") if s.strip()]
+    if not only and not skip:
+        return tasks
+
+    def keep(t):
+        a = t.get("author") or ""
+        if only and not any(k in a for k in only):
+            return False
+        if skip and any(k in a for k in skip):
+            return False
+        return True
+
+    kept = [t for t in tasks if keep(t)]
+    print("[filter] WB_ONLY_AUTHORS=%s WB_SKIP_AUTHORS=%s → 任务 %d → %d 条"
+          % (only or "-", skip or "-", len(tasks), len(kept)), flush=True)
+    return kept
+
+
 def build_task_list_src():
+    """全部调用方（stage1 / progress / remote_handoff / webui…）的唯一任务表入口。
+
+    ⚠️ 跨机切分只在这里生效 —— 别在个别调用点各写一份过滤（会造成口径漂移）。
+    """
     if SOURCE == "lib":
         import lib_source
-        return lib_source.build_lib_tasks()
-    return build_task_list()
+        return _author_filter(lib_source.build_lib_tasks())
+    return _author_filter(build_task_list())
 
 
 # ── ASR ──
