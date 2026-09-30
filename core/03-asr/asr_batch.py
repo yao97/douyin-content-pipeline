@@ -17,7 +17,7 @@
   每段结果独立落盘 `_slice_tmp/<vid>/<tag>/seg_XXX.json`，崩了能断点续跑。
   可用 `WB_SLICE_AUTO=0` 关掉自动切片（退回整条提交）。
 """
-import os, sys, json, time, re, shutil, subprocess, base64, gzip, glob, math
+import os, sys, json, time, re, shutil, subprocess, base64, gzip, glob, math, threading
 from datetime import datetime, timezone, timedelta
 
 import requests
@@ -57,6 +57,7 @@ os.makedirs(RAW_DIR, exist_ok=True)
 # 或一次失败转写留下的残缺结果。这里登记每条「完整且成功」的转写，重跑时据此跳过；
 # 不完整的一律重新进入转写流程。
 REGISTRY  = os.path.join(OUT_ROOT, "_asr_registry.json")
+REG_LOCK  = REGISTRY + ".lock"      # 注册表「读-改-写」互斥锁（见 _reg_guard）
 MIN_CHARS    = int(os.environ.get("WB_MIN_CHARS", "10"))     # 有效转写的最少字符数
 MAX_ATTEMPTS = int(os.environ.get("WB_MAX_ATTEMPTS", "2"))   # 单条最多重试几次后放弃
 
@@ -106,6 +107,133 @@ def save_registry(reg):
     os.replace(tmp, REGISTRY)
 
 
+# ── 注册表互斥用的跨平台「内核字节锁」原语 ──
+# Windows: msvcrt.locking(LK_NBLCK) ；POSIX: fcntl.flock(LOCK_EX|LOCK_NB)
+# 两者都由**内核**在句柄关闭 / 进程退出时自动释放 → 进程被 kill 也不会留死锁。
+try:                                     # pragma: no cover - 平台分支
+    import msvcrt
+
+    def _lock_fd(fd):
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+
+    def _unlock_fd(fd):
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+except ImportError:                      # pragma: no cover - 平台分支
+    import fcntl
+
+    def _lock_fd(fd):
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock_fd(fd):
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+_REG_RLOCK = threading.RLock()    # 进程内：同进程重入放行 / 多线程串行
+_REG_DEPTH = [0]                  # 进程内已持文件锁的层数（可重入计数）
+
+
+class _RegGuard:
+    """注册表「读 → 改 → 写」跨进程互斥（2026-10-01 新增）。
+
+    为什么必须有：`update_entry()` 虽然已经「先重读磁盘、只改自己那条」，但它仍是
+    **load → modify → save 三步**。两个进程改**不同** vid 时，若 A 的 load 与 B 的 load
+    都发生在对方 save 之前，后 save 的那份表就不含对方的改动 → **静默丢更新**。
+    窗口 = 读写一次 772 条 JSON 的时间 —— 单次跑批撞上的概率低，
+    但「守候式 fetch / checkpoint / stage1 / stage2」长期同时跑时会被反复撞。
+    隔离压测（8 进程 × 40 次各写自己的 vid）：**无锁丢 270/320 = 84.4%，加锁零丢失**。
+
+    三个真实写者（都会与 stage1 并行）：
+      · stage1 每条转完 `update_entry()`
+      · checkpoint.py 定期 `retry_infra()`（detached 进程！）
+      · 人工 `accept` / `retry` / `registry`，以及 `remote_handoff.py fetch --apply`
+
+    ⚠️ 实现踩过的坑（别退回 O_EXCL 文件锁）：最初用「`os.open(O_EXCL)` 建锁文件 +
+    `os.remove` 释放」，在 Windows 上必然翻车 —— `os.remove` 是**标记删除**
+    （delete pending），窗口期别的进程 open 同一路径直接 `PermissionError: Errno 13`，
+    这不是"锁被占"，却会被当成异常抛出；而且进程被 kill 时锁文件残留，得靠 stale 超时
+    （120s）兜底，跑批要白等。
+    → 改用**内核字节锁**：Windows `msvcrt.locking(LK_NBLCK)` / POSIX `fcntl.flock`。
+      优点：① 占用与否是"锁不上"而不是"抛异常"；② **进程退出/被杀由 OS 自动释放**，
+      没有陈旧锁；③ 锁文件**永不删除**（常驻，无害），彻底避开 pending-delete。
+
+    **降级策略**：拿不到锁就自旋等，超过 `WB_REG_LOCK_SEC`(20) 秒则放弃加锁直接执行
+      —— 宁可保留极小概率的丢更新，也不能让跑批卡死。
+    环境变量：`WB_REG_LOCK_SEC`(20) / `WB_REG_LOCK_POLL`(0.005)
+    """
+
+    def __init__(self, timeout=None):
+        self.timeout = float(os.environ.get("WB_REG_LOCK_SEC", "20")
+                             if timeout is None else timeout)
+        self.poll = float(os.environ.get("WB_REG_LOCK_POLL", "0.005"))
+        self.fd = None
+        self.waited = 0.0
+        self.degraded = False
+        self.reentrant = False
+
+    def __enter__(self):
+        # ① 进程内：RLock 保证同进程重入直接放行、多线程串行（否则嵌套调用会白等超时）
+        _REG_RLOCK.acquire()
+        if _REG_DEPTH[0] > 0:
+            _REG_DEPTH[0] += 1
+            self.reentrant = True
+            return self
+        # ② 跨进程：内核字节锁
+        t0 = time.time()
+        try:
+            fd = os.open(REG_LOCK, os.O_CREAT | os.O_RDWR)
+        except OSError:
+            _REG_DEPTH[0] = 1            # 连文件都开不了 → 直接干，别卡跑批
+            self.degraded = True
+            return self
+        while True:
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                _lock_fd(fd)              # 非阻塞；已被占用 → OSError
+                self.fd = fd
+                _REG_DEPTH[0] = 1
+                return self
+            except OSError:
+                if time.time() - t0 > self.timeout:
+                    self.degraded = True
+                    self.waited = time.time() - t0
+                    try:
+                        os.close(fd)
+                    except Exception:
+                        pass
+                    _REG_DEPTH[0] = 1     # 降级：不阻塞跑批
+                    return self
+                # 轮询粒度：注册表写是**低频**操作（stage1 每条转写才写一次），
+                # 但批处理里会有连续写。5ms 兼顾「不空转 CPU」与「不放大串行总耗时」。
+                time.sleep(self.poll)
+
+    def __exit__(self, *exc):
+        try:
+            _REG_DEPTH[0] -= 1
+            if getattr(self, "reentrant", False) or _REG_DEPTH[0] > 0:
+                return False              # 外层还持着，别释放
+            if self.fd is not None:
+                try:
+                    os.lseek(self.fd, 0, os.SEEK_SET)
+                    _unlock_fd(self.fd)
+                except Exception:
+                    pass
+                try:
+                    os.close(self.fd)
+                except Exception:
+                    pass
+                self.fd = None
+        finally:
+            try:
+                _REG_RLOCK.release()
+            except Exception:
+                pass
+        return False
+
+
+def _reg_guard(timeout=None):
+    return _RegGuard(timeout)
+
+
 def _reg():
     """读注册表（带缓存，但会检测文件是否被其它进程改过而自动重载）。
 
@@ -121,12 +249,26 @@ def _reg():
     return _reg_cache
 
 
-def update_entry(vid, patch=None, remove=(), delete=False):
+def update_entry(vid, patch=None, remove=(), delete=False, guarded=True):
     """只更新注册表里某一条：**先重读磁盘**再改，避免长跑进程用旧缓存整表回写。
 
     这是"并发安全"的关键：多个进程（stage1 / checkpoint / 人工 CLI）同时改注册表时，
     各自只动自己那条，不会互相抹掉。
+
+    ⚠️ 但「只改自己那条」本身**不够**：load → modify → save 三步里，两个进程改**不同**
+    vid 且 load 都早于对方 save 时，后写的表不含对方改动 → 仍会静默丢更新。
+    所以整个序列要套 `_reg_guard()`（跨进程互斥）。`guarded=False` 仅供**已持锁的调用方**
+    （如 `retry_infra` 批量放行）避免自锁，别在别处用。
     """
+    global _reg_cache, _reg_stamp
+    if not guarded:
+        return _update_entry_locked(vid, patch=patch, remove=remove, delete=delete)
+    with _reg_guard():
+        return _update_entry_locked(vid, patch=patch, remove=remove, delete=delete)
+
+
+def _update_entry_locked(vid, patch=None, remove=(), delete=False):
+    """`update_entry` 的实际实现 —— **必须在 `_reg_guard()` 保护下调用**。"""
     global _reg_cache, _reg_stamp
     fresh = load_registry()          # 永远基于磁盘最新内容
     if delete:
@@ -256,7 +398,17 @@ def retry_infra(max_rounds=3):
 
     注意：**从磁盘重读**而不是用模块缓存 —— 该函数可能被 checkpoint 在
     stage1 长跑期间调用，用旧缓存会把 stage1 刚写的状态覆盖掉。
+    **2026-10-01 起**：整个「读全表 → 批量改 → 写回」套 `_reg_guard()` 互斥 ——
+    `checkpoint.py` 是 **detached 进程**，与 stage1 真并行，旧写法（无锁整表回写）
+    会把 stage1 在窗口内新写的条目静默盖掉。
     """
+    global _reg_cache, _reg_stamp
+    with _reg_guard():
+        return _retry_infra_locked(max_rounds)
+
+
+def _retry_infra_locked(max_rounds):
+    """`retry_infra` 的实际实现 —— **必须在 `_reg_guard()` 保护下调用**。"""
     global _reg_cache, _reg_stamp
     reg = load_registry()
     freed, exhausted = [], []
@@ -370,7 +522,19 @@ def is_abandoned(vid):
 
 
 def build_registry():
-    """扫描 _asr_raw 全量重建注册表：把现有成果登记进来，不完整的剔除"""
+    """扫描 _asr_raw 全量重建注册表：把现有成果登记进来，不完整的剔除
+
+    ⚠️ **整表覆盖**，是全项目最危险的注册表操作（会把没扫到的条目全删掉）。
+    `_reg_guard()` 锁**覆盖「扫描 → 写回」全程**（不是只锁 save）：
+    否则扫描途中 stage1 新 `update_entry()` 的条目会被这份旧快照盖掉。
+    也正因此，**跑批进行中不要手工跑 `registry`**（脚本 CLI 会先警告）。
+    """
+    with _reg_guard(timeout=float(os.environ.get("WB_REG_LOCK_SEC", "20"))):
+        return _build_registry_locked()
+
+
+def _build_registry_locked():
+    """`build_registry` 的实际实现 —— **必须在 `_reg_guard()` 保护下调用**。"""
     reg = {}
     ok = bad = 0
     bads = []
@@ -1606,6 +1770,13 @@ if __name__ == "__main__":
     # 注意：accept/slice 等模式的 argv[2] 是 vid 而非数字，必须容错解析（否则 int(vid) 直接抛错）
     lim = _int_or_none(sys.argv[2]) if len(sys.argv) > 2 else None
     if mode == "registry":
+        # ⚠️ 整表回写：跑批在跑时它会与 stage1 抢注册表（已加互斥锁，但语义上仍是"用旧快照覆盖"）。
+        #    加锁只保证不写坏文件、不丢并发写，**不保证**扫描期间 stage1 刚写的条目不被剔除。
+        if os.path.exists(_lock_path("stage1")) or os.path.exists(_lock_path("stage2")):
+            print("[warn] stage1/stage2 锁存在（跑批进行中）。registry 是**整表覆盖**，"
+                  "虽然有互斥锁不会写坏，但仍可能剔除扫描窗口内新增的条目。\n"
+                  "       建议：等跑批结束再重建；只想登记新作品请用 remote_handoff.py import/fetch。",
+                  flush=True)
         build_registry()          # 全量扫描 _asr_raw，重建转写注册表
     if mode == "accept" and len(sys.argv) > 2:
         # 确认某条『本就几乎无语音』，登记为已转写成功，不再重试

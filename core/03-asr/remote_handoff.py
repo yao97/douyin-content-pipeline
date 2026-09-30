@@ -504,11 +504,40 @@ def cmd_import(src_dir, apply=False, force=False, _tmp_owner=None):
     print("\n合入 %d 条 → %s" % (n, B.RAW_DIR))
 
     if n:
-        B.build_registry()            # 重建注册表（唯一写者 = 本机）
+        for vid, d, _p in new:
+            _register_one(vid, d)     # 逐条登记（并发安全，见函数注释）
+        print("注册表已登记 %d 条（逐条 update_entry，stage1 在跑也不冲突）" % n)
         print("\n下一步（缺一步都不会出 md）：")
         print("  python _stage2_daemon.py    # 渲染 raw → md（关键词 + LLM 摘要 + 同名封面）")
         print("  ⚠️ stage2 若已在跑会自动捡到新 raw，不必手工干预。")
     return 0
+
+
+def _register_one(vid, d):
+    """把一条新合入的 raw 登记进 `_asr_registry.json`。
+
+    ⚠️ **这里必须用 `update_entry()`，不能用 `B.build_registry()`**（2026-10-01 改）。
+    `build_registry()` 是「扫描 _asr_raw 全量 → `save_registry()` 整表覆盖」，在 stage1
+    正在跑的时候用它有两个真实风险：
+
+    1. **抹掉管理字段**：它每条只写 7 个基础字段（ok/author/pub/duration/chars/job_id/ts），
+       `abandoned` / `why` / `low_content` / `attempts` / `retry_rounds` / `note` / `sliced`
+       全部丢失 → 已被判「放弃」的作品会被当成没转过，跑批重转一遍（代价不可逆）。
+    2. **丢新增**：整表覆盖发生在「扫描快照」之后，扫描窗口内 stage1 刚 `update_entry()`
+       写入的条目会被这份旧快照盖掉。
+
+    `update_entry()` 的正确姿势是「先重读磁盘 → 只改自己那条 → 原子写回」，与 stage1 的
+    写路径同构，谁都不会盖谁。需要全量重建时用 `asr_batch.py registry`（**跑批停止时**执行）。
+    """
+    B.update_entry(vid, {
+        "ok": True,
+        "author": d.get("author", ""),
+        "pub": d.get("pub", ""),
+        "duration": d.get("duration", 0),
+        "chars": len((d.get("text") or "").strip()),
+        "job_id": d.get("job_id", ""),
+        "ts": B.datetime.now(B.CST).strftime("%Y-%m-%d %H:%M:%S"),
+    }, remove=("abandoned", "why", "note"), )
 
 
 # ────────────────── 夸克搬运（经 alist；CLI 够不到源库）──────────────────
