@@ -24,9 +24,12 @@
 
 用法
 ----
-  python remote_handoff.py export [--out DIR] [--author 名称] [--limit N]
+  python remote_handoff.py export [DIR] [--out DIR] [--author 名称] [--limit N]
   python remote_handoff.py import <DIR> [--apply] [--force]
   python remote_handoff.py status
+
+（出口目录 `DIR` 位置写法与 `--out DIR` 等价；两者都不给则落 `<脚本目录>/_handoff/to_remote`。
+  `import` 默认**只预演**，必须显式 `--apply` 才落盘；`--force` 覆盖已存在且已转写的条目。）
 """
 import os
 import sys
@@ -281,18 +284,32 @@ def cmd_status():
 def main():
     argv = sys.argv[1:]
     mode = argv[0] if argv else "status"
-    args = [a for a in argv[1:] if not a.startswith("--")]
-    flags = {a for a in argv[1:] if a.startswith("--")}
+    rest = argv[1:]
+
+    # 严格分词：`--flag value` 的 value 归入 opts，不再漏进 positional
+    #（旧实现 `args = [a for a in rest if not a.startswith("--")]` 会把 --out 的值
+    #  也当成位置参数，导致 `export <dir>` 的位置写法被**静默忽略** → 写到默认目录）
+    positional, flags, opts = [], set(), {}
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a.startswith("--"):
+            if i + 1 < len(rest) and not rest[i + 1].startswith("--"):
+                opts[a] = rest[i + 1]
+                i += 2
+                continue
+            flags.add(a)
+        else:
+            positional.append(a)
+        i += 1
+    args = positional
 
     def opt(name, default=None):
-        if name in argv:
-            i = argv.index(name)
-            if i + 1 < len(argv):
-                return argv[i + 1]
-        return default
+        return opts.get(name, default)
 
     if mode == "export":
-        out = opt("--out", os.path.join(HERE, "_handoff", "to_remote"))
+        out = opt("--out") or (args[0] if args else None) \
+            or os.path.join(HERE, "_handoff", "to_remote")
         lim = opt("--limit")
         return cmd_export(out, opt("--author"), int(lim) if lim else None)
     if mode == "import":
