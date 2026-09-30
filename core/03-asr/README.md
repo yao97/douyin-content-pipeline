@@ -7,7 +7,7 @@
 | `asr_batch.py` | **转写主程序**。子命令：`stage1` / `stage2` / `registry` / `accept` / `retry` / `syncmeta` / `syncmd` / `slice` / `slice-all` |
 | `lib_source.py` | 数据源适配层：把 `自媒体视频库` 的文件系统翻译成转写任务列表 |
 | `_stage2_daemon.py` | 渲染守护：raw → md（关键词 + LLM 总结）+ 复制封面 |
-| `remote_handoff.py` | **跨机交接**：`export`（生成外机待转写清单）/ `import`（合入外机回传的 raw + 重建注册表）/ `status` |
+| `remote_handoff.py` | **跨机交接**：`export`（生成外机待转写清单）/ `publish`（清单推到夸克）/ `fetch`（从夸克拉回传包并导入）/ `import`（合入 raw + 重建注册表）/ `status` |
 | `checkpoint.py` | 诊断 + 尽力拉起（尾行打 `ACTION:`） |
 | `progress.py` | 进度快照 |
 | `webui.py` | 实时看板（Flask，`:8770`） |
@@ -31,19 +31,38 @@
 
 ## 1b. 在第二台机器上跑（跨机转写）
 
-完整流程见 [`docs/11-跨机转写.md`](../../docs/11-跨机转写.md)。要点：
+完整流程见 [`docs/11-跨机转写.md`](../../docs/11-跨机转写.md)。两端约定夸克目录
+`自媒体视频库/_跨机交接/{to_remote,from_remote}` 做唯一通道。
+
+**本机侧**（两条命令）：
 
 ```bash
-# 外机：所有本机路径都用环境变量指过去，代码零改动
+python remote_handoff.py publish        # 清单 → 夸克 to_remote/（~330 KB）
+# …外机跑完并回传 from_remote/xxx.zip…
+python remote_handoff.py fetch --apply  # 拉最新 zip → 校验合入 → 重建注册表
+```
+
+**外机侧**：
+
+```bash
+# 1) 从夸克下 to_remote/ 三个文件；按「外机操作说明.md」下 4 个源目录并改名
+# 2) 所有本机路径都用环境变量指过去，代码零改动
 set WB_SOURCE=lib
 set WB_OUT_ROOT=<外机的知识库目录>
 set WB_LIB_ROOT=<外机的视频库目录>
 set WB_FFMPEG=<外机 ffmpeg.exe>
 python asr_batch.py stage1          # 只产 _asr_raw/*.json
+# 3) 把清单里那些 vid 的 json 打 zip 传回夸克 from_remote/
 ```
 
 ⚠️ **外机不要跑 `registry`、不要跑 `stage2`** —— 注册表与 md 的写者只能是本机，
 否则两台会互相覆盖（`_asr_registry.json` 整表回写会静默抹掉对方改动）。
+
+> **搬运通道为什么不是一把梭**：夸克官方 CLI 的开放平台令牌是**受限视图**
+> （`browse --parent-fid 0` 只看到 2 个目录，直取源库 fid 返回 `12005 文件无权限`）；
+> alist 的**上传与列目录可用、下载直链被夸克 CDN 拒**（`RequestDeniedByCallback`）。
+> 所以本工具：列目录/上传走 alist，下载走**夸克 web API + alist 里那份 cookie**。
+> 细节与验证过程见 `docs/11-跨机转写.md` §3.1。
 
 ---
 
