@@ -37,6 +37,9 @@ URLS = [
     # 2026-10-03 新增：程前朋友圈（UID 3276187176547131）→ 常年采集，
     # 存量 81 个 m4a 已于 10-03 用 _seed_done.py --apply 写回 download_data，不会重下
     "https://www.douyin.com/user/MS4wLjABAAAAGBna-_q1fATnLEw6bME0dGVEol0Ju4ZXHFTvn3lUOTijO2YOTrL6H6eBWmt9qmSB/",
+    # 2026-10-08 新增：雯绉绉（UID 1145060725897644，75 作品 = 74 视频 + 1 图集）→ 常年采集，
+    # 存量 73 个 m4a 已落盘；7614503811700297000 源端不可用已列入 _skip_ids.json
+    "https://www.douyin.com/user/MS4wLjABAAAAmdECPw4a_AShdkIumXo64vj07g5UXwUM01mZ_XAVXmt00QXKlYwdO8Pd-qU2bmBK/",
 ]
 
 

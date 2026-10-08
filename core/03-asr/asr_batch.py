@@ -1469,7 +1469,37 @@ def call_llm(prompt, num_predict=900, temperature=0.3, num_ctx=8192, timeout=360
     return _ollama_call(prompt, num_predict, temperature, num_ctx, timeout)
 
 
-def extract_keywords(title, text):
+def extract_keywords(title, text, author=""):
+    """关键词提取。**优先复用词库**（`keyword_lib`），库内无合适词才新造。
+
+    为什么加这层：原来每篇都让 LLM 自由造 4 个词，造完就扔 →
+    实测 4176 个词里 90.5% 只用过一次，同一主播自己都在造近义词
+    （程前朋友圈同时有 创业逆袭/创业经历/创业历程/创业故事），检索根本归拢不了。
+
+    词库缺失或加载失败时**自动退化为原行为**，不影响跑批。
+    可用环境变量 `WB_KW_REUSE=0` 关闭（对照用）。
+    """
+    if os.environ.get("WB_KW_REUSE", "1") != "0":
+        try:
+            import keyword_lib
+            lib = keyword_lib.load_lib()
+            if lib.get("counts"):
+                kws = keyword_lib.extract_keywords(title, text, author=author, lib=lib)
+                if kws:
+                    # 新造词入库，让词库自我收敛（下次可被复用）
+                    try:
+                        if keyword_lib.record_new(lib, author, kws.split("、")):
+                            keyword_lib.save_lib(lib)
+                    except Exception as e:
+                        print(f"[kw] 词库写入失败（忽略）: {type(e).__name__}", flush=True)
+                    return kws
+        except Exception as e:
+            print(f"[kw] 词库复用不可用，退回自由造词: {type(e).__name__}: {str(e)[:100]}", flush=True)
+    return _extract_keywords_free(title, text)
+
+
+def _extract_keywords_free(title, text):
+    """原实现：不查词库，自由造词（降级路径 / 对照基线）。"""
     body = text[:800] if text else ""
     user = f"标题：{title}\n逐字稿：{body}" if body else f"标题：{title}\n（无逐字稿）"
     content = call_llm(KW_PROMPT + "\n" + user, num_predict=64,
@@ -1782,7 +1812,7 @@ def stage2(limit=None):
             continue
         try:
             os.makedirs(outdir, exist_ok=True)
-            kws = extract_keywords(data.get("title", ""), data.get("text", ""))
+            kws = extract_keywords(data.get("title", ""), data.get("text", ""), author=author)
             summary = extract_summary(data.get("title", ""), data.get("text", ""))
             md, cover_name = render_md(data, kws, summary)
             if os.path.exists(data["cover"]):

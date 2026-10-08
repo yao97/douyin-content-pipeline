@@ -61,7 +61,8 @@ try:
             vid = data["vid"]
             try:
                 os.makedirs(outdir, exist_ok=True)
-                kws = old_kw or B.extract_keywords(data.get("title", ""), data.get("text", ""))
+                kws = old_kw or B.extract_keywords(data.get("title", ""), data.get("text", ""),
+                                                  author=data["author"])
                 summary = B.extract_summary(data.get("title", ""), data.get("text", ""))
                 md, cover_name = B.render_md(data, kws, summary)
                 if os.path.exists(data["cover"]):
