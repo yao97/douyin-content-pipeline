@@ -1060,17 +1060,24 @@ def _cut_segments(src, tag, seg_sec, outdir, force=False):
     parts, off = [], 0.0
     for idx, f in enumerate(existing):
         d = probe_duration(f)
-        if not d:
-            raise RuntimeError(f"段文件探测不到时长: {f}")
-        if d <= 0.5:
+        # ⚠️ 顺序踩过坑（2026-10-08）：原来先 `if not d: raise`，再 `if d <= 0.5: 丢碎段`。
+        # 但**恰好为 0.00s 的残段**（ffmpeg 边界舍入，实测 156 字节 / 16 帧）
+        # 会被 probe_duration 判成假值 → 直接抛「段文件探测不到时长」，
+        # **永远走不到丢弃分支**，整条作品因此 abandoned。
+        # 实证：13 个残段里有 2 个是 0.00s，导致 2 条作品（均为「钦文和他的朋友��」长视频）
+        # 在 attempts=2 后放弃。修法：把「碎段」判断提到前面，用 `d == 0` 一并覆盖。
+        if not d or d <= 0.5:
             # 只有**末尾**的碎屑段可以丢（ffmpeg 段边界舍入残留，送了也是白跑一次 ASR）
             if idx == len(existing) - 1:
-                print(f"[slice]   丢弃末尾碎段 {os.path.basename(f)}（{d:.2f}s）", flush=True)
+                print(f"[slice]   丢弃末尾碎段 {os.path.basename(f)}"
+                      f"（{d:.2f}s）", flush=True)
                 try:
                     os.remove(f)
                 except Exception:
                     pass
                 continue
+            if not d:
+                raise RuntimeError(f"段文件探测不到时长: {f}")
             raise RuntimeError(f"段文件异常(时长{d}): {f}")
         parts.append((f, off, d))
         off += d
