@@ -24,6 +24,7 @@ import asr_batch as B
 import lib_source
 
 OUT_ROOT = B.OUT_ROOT
+AUTHORS_DIR = B.AUTHORS_DIR
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 FIELDS = ("作者", "抖音账号", "作品ID", "视频标题", "发布时间", "关键词", "视频封面")
 FIELD_RE = re.compile(r"^(" + "|".join(FIELDS) + r")：(.*)$")
@@ -40,10 +41,10 @@ app = Flask(__name__)
 # ────────────────────────── 索引构建 ──────────────────────────
 
 def _author_dirs():
-    if not os.path.isdir(OUT_ROOT):
+    if not os.path.isdir(AUTHORS_DIR):
         return []
-    return [d for d in sorted(os.listdir(OUT_ROOT))
-            if os.path.isdir(os.path.join(OUT_ROOT, d)) and not d.startswith(("_", "."))]
+    return [d for d in sorted(os.listdir(AUTHORS_DIR))
+            if os.path.isdir(os.path.join(AUTHORS_DIR, d)) and not d.startswith(("_", "."))]
 
 
 def parse_md_text(txt):
@@ -119,7 +120,7 @@ def build_index(force=False):
     reg = B.load_registry()
     docs, authors = [], {}
     for au in _author_dirs():
-        ap = os.path.join(OUT_ROOT, au)
+        ap = os.path.join(AUTHORS_DIR, au)
         try:
             names = [f for f in os.listdir(ap) if f.lower().endswith(".md")]
         except Exception:
@@ -167,10 +168,12 @@ def build_index(force=False):
                 "low_content": bool(re_e.get("low_content")),
             }
             docs.append(d)
-            a = authors.setdefault(d["author"], {"name": d["author"], "docs": 0, "chars": 0, "dur": 0.0})
+            a = authors.setdefault(d["author"], {"name": d["author"], "docs": 0, "chars": 0, "dur": 0.0, "account": ""})
             a["docs"] += 1
             a["chars"] += d["chars"]
             a["dur"] += d["dur"] or 0
+            if d["account"] and not a["account"]:
+                a["account"] = d["account"]
 
     docs.sort(key=lambda d: (d["pub"] or "", d["stem"]), reverse=True)
     with _lock:
@@ -901,6 +904,7 @@ header.top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom
 header.top h1{font-size:20px;font-weight:700}
 header.top .sp{flex:1}
 .badge{background:var(--soft);color:var(--dim);border-radius:999px;padding:3px 11px;font-size:12.5px}
+.badge.nav-on{background:var(--accent);color:#fff}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:16px}
 .card h2{font-size:15px;font-weight:700;margin-bottom:14px;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
 .grid{display:grid;gap:14px}
@@ -986,10 +990,21 @@ HEAD = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>__TITLE__</title><style>__CSS__</style></head><body><div class="wrap">
 <header class="top"><h1><a href="/" style="color:inherit">📚 媒体知识库</a></h1>
-<span class="badge">抖音逐字稿 · 转写看板</span><span class="sp"></span>
+<span class="sp"></span>
+<a class="badge__NAV0__" href="/">📊 转写看板</a>
+<a class="badge__NAV1__" href="/transcripts">📝 逐字稿</a>
 <a class="badge" href="/search">🔍 搜索</a></header>
 """
 FOOT = """</div>__SCRIPT__</body></html>"""
+
+
+def _nav_patch(head_html, nav):
+    """把 HEAD 里的三段导航占位替换成实际 HTML（当前页高亮）。"""
+    b_on = " nav-on" if nav == "board" else ""
+    d_on = " nav-on" if nav == "docs" else ""
+    return (head_html
+            .replace('class="badge__NAV0__"', 'class="badge' + b_on + '"')
+            .replace('class="badge__NAV1__"', 'class="badge' + d_on + '"'))
 
 
 @app.template_filter("fsize")
@@ -1006,16 +1021,16 @@ def _f_fsize(n):
     return "%.2f TB" % n
 
 
-def page(title, body, script="", **ctx):
+def page(title, body, script="", nav="", **ctx):
     """只把 body 交给 Jinja 渲染，外壳（CSS/JS）用字符串拼接。
 
     为什么不让整页过 Jinja：CSS/JS 里出现 `{{` 或 `{%` 会被当成模板语法报错，
     而它们跟业务无关，没必要参与渲染。
     """
-    inner = render_template_string(body, **ctx)
-    shell = (HEAD.replace("__TITLE__", H.escape(title)).replace("__CSS__", CSS)
-             + inner + FOOT.replace("__SCRIPT__", script))
-    return shell
+    inner = render_template_string(body, nav=nav, **ctx)
+    head = _nav_patch(HEAD.replace("__TITLE__", H.escape(title))
+                      .replace("__CSS__", CSS), nav)
+    return head + inner + FOOT.replace("__SCRIPT__", script)
 
 
 HOME_BODY = """
@@ -1110,31 +1125,6 @@ HOME_BODY = """
  </tbody></table>
  <div class="muted" style="margin-top:11px">「已下载」= 磁盘上真实存在该作品的文件（对比 <code>Data/*.csv</code> 作品清单）；
  「音轨就绪」= 已有 <code>.m4a</code>，转写流水线可直接使用；原片 <code>.mp4</code> 下完抽音轨后转写。</div>
-</div>
-
-<div class="card"><h2>按主播分布 <span class="badge">{{ p.authors|length }} 位</span></h2>
- <div class="agrid">
- {% for a in p.authors %}
-   <a class="acard" href="/author/{{ a.name }}">
-     <div class="n">{{ a.name }}</div>
-     <div class="big">{{ a.docs }}<span style="font-size:13px;color:#6b7280;font-weight:400"> 篇</span></div>
-     <div class="m"><span>{{ '{:,}'.format(a.chars) }} 字</span><span>{{ '%.1f'|format(a.dur/3600) }} h</span></div>
-   </a>
- {% endfor %}
- </div>
-</div>
-
-<div class="card"><h2>最近完成 <span class="badge">最新 12 条</span></h2>
- <table><thead><tr><th style="width:150px">完成时间</th><th style="width:140px">作者</th>
- <th>作品</th><th style="width:80px">时长</th></tr></thead><tbody>
- {% for r in p.recent %}
-  <tr><td class="muted">{{ r.ts }}</td><td>{{ r.author }}</td>
-   <td><a href="https://www.douyin.com/video/{{ r.vid }}" target="_blank" rel="noopener">{{ r.vid }}</a></td>
-   <td class="muted">{{ '%.1f'|format((r.duration or 0)/60) }} 分</td></tr>
- {% endfor %}
- </tbody></table>
- <div class="muted" style="margin-top:12px">共 {{ p.md_total }} 篇逐字稿：点上方主播卡片进入浏览，或
- <a href="/search">搜索标题 / 关键词 / 全文</a>。</div>
 </div>
 """
 
@@ -1268,12 +1258,56 @@ dlTick(); setInterval(dlTick, 5000);
 </script>
 """
 
+DOCS_BODY = """
+<div class="grid g4">
+  <div class="stat"><div class="k">逐字稿篇数</div><div class="v">{{ p.md_total }}</div>
+    <div class="s">共 {{ '{:,}'.format(p.chars_total) }} 字</div></div>
+  <div class="stat"><div class="k">主播数</div><div class="v">{{ p.authors|length }}</div>
+    <div class="s">按主页分布</div></div>
+  <div class="stat"><div class="k">总音频时长</div>
+    <div class="v">{{ '%.1f'|format(p.done_h) }}<span style="font-size:15px;color:#6b7280"> h</span></div>
+    <div class="s">已转写完成部分</div></div>
+  <div class="stat"><div class="k">待转写</div>
+    <div class="v">{{ p.todo }}<span style="font-size:15px;color:#6b7280"> 条</span></div>
+    <div class="s">剩余 {{ '%.2f'|format(p.todo_h) }} h</div></div>
+</div>
+
+<div class="card">
+ <h2>按主播浏览 <span class="badge">{{ p.authors|length }} 位</span>
+   <span style="flex:1"></span>
+   <a class="badge" href="/search">🔍 搜索标题 / 关键词 / 全文</a></h2>
+ <div class="agrid">
+ {% for a in p.authors %}
+   <a class="acard" href="/author/{{ a.name }}">
+     <div class="n">{{ a.name }}</div>
+     <div class="big">{{ a.docs }}<span style="font-size:13px;color:#6b7280;font-weight:400"> 篇</span></div>
+     <div class="m"><span>{{ '{:,}'.format(a.chars) }} 字</span><span>{{ '%.1f'|format(a.dur/3600) }} h</span></div>
+   </a>
+ {% endfor %}
+ </div>
+</div>
+
+<div class="card"><h2>最近完成 <span class="badge">最新 12 条</span></h2>
+ <table><thead><tr><th style="width:150px">完成时间</th><th style="width:140px">作者</th>
+ <th>作品</th><th style="width:80px">时长</th></tr></thead><tbody>
+ {% for r in p.recent %}
+  <tr><td class="muted">{{ r.ts }}</td>
+   <td><a href="/author/{{ r.author }}">{{ r.author }}</a></td>
+   <td><a href="https://www.douyin.com/video/{{ r.vid }}" target="_blank" rel="noopener">{{ r.vid }}</a></td>
+   <td class="muted">{{ '%.1f'|format((r.duration or 0)/60) }} 分</td></tr>
+ {% endfor %}
+ </tbody></table>
+ <div class="muted" style="margin-top:12px">共 {{ p.md_total }} 篇逐字稿：点上方主播卡片进入浏览。</div>
+</div>
+"""
+
 AUTH_BODY = """
 <div class="crumb"><a href="/">← 返回看板</a></div>
 <div class="card">
   <h2>{{ name }} <span class="badge">{{ docs|length }} 篇</span>
       <span class="badge">{{ '{:,}'.format(a.chars) }} 字</span>
-      <span class="badge">{{ '%.1f'|format(a.dur/3600) }} 小时音频</span></h2>
+      <span class="badge">{{ '%.1f'|format(a.dur/3600) }} 小时音频</span>
+      {% if a.account %}<a class="badge" href="https://www.douyin.com/user/{{ a.account }}" target="_blank" rel="noopener" style="text-decoration:none">抖音主页 ↗</a>{% endif %}</h2>
   <input class="q" id="filter" placeholder="在本主播内筛选标题 / 关键词…">
 </div>
 <div class="card">
@@ -1391,8 +1425,14 @@ SEARCH_BODY = """
 def page_home():
     # 首屏直接把实时数据服务端渲染出来（避免 JS 拉取前的"加载中"闪烁），
     # 之后由 /api/live 每 1.2s、/api/download 每 5s 接管刷新。
-    return page("媒体知识库 · 转写进度", HOME_BODY, HOME_SCRIPT,
+    return page("媒体知识库 · 转写看板", HOME_BODY, HOME_SCRIPT, nav="board",
                 p=progress_data(), l=live_state(), dl=download_state())
+
+
+@app.route("/transcripts")
+def page_transcripts():
+    """逐字稿独立 UI：与看板分开，这里只管「读」已产出的 md。"""
+    return page("媒体知识库 · 逐字稿", DOCS_BODY, nav="docs", p=progress_data())
 
 
 @app.route("/author/<name>")
@@ -1402,12 +1442,13 @@ def page_author(name):
     if not docs:
         abort(404)
     a = c["authors"].get(name, {"name": name, "docs": len(docs), "chars": 0, "dur": 0})
-    return page(f"{name} · 逐字稿", AUTH_BODY, AUTH_SCRIPT, name=name, docs=docs, a=a)
+    return page(f"{name} · 逐字稿", AUTH_BODY, AUTH_SCRIPT, nav="docs",
+                name=name, docs=docs, a=a)
 
 
 @app.route("/doc/<name>/<stem>")
 def page_doc(name, stem):
-    ap = os.path.join(OUT_ROOT, name)
+    ap = os.path.join(AUTHORS_DIR, name)
     fp = os.path.join(ap, stem + ".md")
     if not os.path.isfile(fp):
         abort(404)
@@ -1434,7 +1475,7 @@ def page_doc(name, stem):
     cover = mc.group(1).strip() if mc else ""
     kws = [k.strip() for k in re.split(r"[、,，]", fields.get("关键词", "")) if k.strip()]
 
-    return page((fields.get("视频标题") or stem)[:40], DOC_BODY, DOC_SCRIPT,
+    return page((fields.get("视频标题") or stem)[:40], DOC_BODY, DOC_SCRIPT, nav="docs",
                 name=name, stem=stem, f=fields, vid=vid, cover=cover,
                 has_cover=bool(cover) and os.path.exists(os.path.join(ap, cover)),
                 summary_html=summary_html, trans_html=trans_html, kws=kws,
@@ -1454,7 +1495,7 @@ def page_search():
             snip = ""
             if not hit and fulltext:
                 try:
-                    t = open(os.path.join(OUT_ROOT, d["author"], d["file"]),
+                    t = open(os.path.join(AUTHORS_DIR, d["author"], d["file"]),
                              encoding="utf-8", errors="replace").read()
                     i = t.lower().find(ql)
                     if i >= 0:
@@ -1466,12 +1507,13 @@ def page_search():
                 results.append((d, snip))
             if len(results) >= 300:
                 break
-    return page("搜索逐字稿", SEARCH_BODY, q=q, fulltext=fulltext, results=results)
+    return page("搜索逐字稿", SEARCH_BODY, nav="docs",
+                q=q, fulltext=fulltext, results=results)
 
 
 @app.route("/media/<name>/<path:fname>")
 def media(name, fname):
-    ap = os.path.join(OUT_ROOT, name)
+    ap = os.path.join(AUTHORS_DIR, name)
     if not os.path.isdir(ap) or "/" in fname or "\\" in fname or ".." in fname:
         abort(404)
     if not os.path.isfile(os.path.join(ap, fname)):

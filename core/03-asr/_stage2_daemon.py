@@ -51,7 +51,7 @@ try:
                 data = json.load(open(os.path.join(B.RAW_DIR, fn), encoding="utf-8"))
             except Exception:
                 continue
-            outdir = os.path.join(B.OUT_ROOT, data["author"])
+            outdir = os.path.join(B.AUTHORS_DIR, data["author"])
             md_path = os.path.join(outdir, f"{data['pub']}_{data['author']}_{data['vid']}.md")
             need, old_kw = md_state(md_path)
             if need:

@@ -37,6 +37,7 @@ LLM_MODEL = "Qwen3.5-4B:latest"
 ROOT      = os.environ.get("WB_LEGACY_ROOT", r"C:\Users\EDY\Videos\data\关注")
 APPDATA   = os.environ.get("WB_APPDATA", r"C:\Users\EDY\Videos\data\.appdata")
 OUT_ROOT  = os.environ.get("WB_OUT_ROOT", r"D:\视频\媒体知识库")
+AUTHORS_DIR = os.path.join(OUT_ROOT, "博主")   # 博主子目录（2026-10-03：博主文件夹统一挪到这里，根目录只留 _ 系统文件）
 RAW_DIR   = os.path.join(OUT_ROOT, "_asr_raw")
 FFMPEG    = os.environ.get(
     "WB_FFMPEG",
@@ -51,6 +52,7 @@ ZOMBIE_SEC = float(os.environ.get("WB_ZOMBIE_SEC", "120"))
 SERVICE_WAIT = float(os.environ.get("WB_SERVICE_WAIT", "600"))
 
 os.makedirs(RAW_DIR, exist_ok=True)
+os.makedirs(AUTHORS_DIR, exist_ok=True)
 
 # ── 转写注册表 ──
 # 只靠「_asr_raw/<vid>.json 是否存在」判断跳过是脆弱的：文件可能是空的、截断的、
@@ -1720,8 +1722,8 @@ def sync_md_header():
     标题可能含换行，故必须整块重建，不能逐行替换（否则会留下重复的续行）。
     """
     n = 0
-    for author in sorted(os.listdir(OUT_ROOT)):
-        d = os.path.join(OUT_ROOT, author)
+    for author in sorted(os.listdir(AUTHORS_DIR)):
+        d = os.path.join(AUTHORS_DIR, author)
         if not os.path.isdir(d) or author.startswith("_") or author.startswith("."):
             continue
         for fn in sorted(os.listdir(d)):
@@ -1772,7 +1774,7 @@ def stage2(limit=None):
             break
         data = json.load(open(os.path.join(RAW_DIR, fn), encoding="utf-8"))
         author, vid = data["author"], data["vid"]
-        outdir = os.path.join(OUT_ROOT, author)
+        outdir = os.path.join(AUTHORS_DIR, author)
         md_path = os.path.join(outdir, f"{data['pub']}_{author}_{vid}.md")
         if os.path.exists(md_path):
             skipped += 1

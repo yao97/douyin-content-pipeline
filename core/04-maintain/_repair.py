@@ -78,11 +78,26 @@ def main():
                 return True
         return False
 
+    def files_exist_any_nick(folder: pathlib.Path, wid: str, exts) -> bool:
+        """同一作品在 CSV 里可能有两行且「账号昵称」不同（共创 / 引用 / 首作归属变化），
+        expect[wid] 只保留最后一行 → 期望前缀与实际文件名不符，会被误判「缺失」，
+        --apply 就删掉库记录并重下。这里按「作品ID 唯一」放宽：只要目录下存在
+        *_{wid}.<ext> 即视为已落盘（2026-10-03 程前朋友圈 7418113416277101876 实测）。
+        """
+        for ext in exts:
+            if any(folder.glob(f"*_{wid}{ext[1:]}")):
+                return True
+        return False
+
     # 2. 逐个判断作品是否真的落盘（视频看 mp4/m4a；图集/实况看图片）
     missing = {}
     for wid, (pat_new, pat_old, kind) in expect.items():
         exts = IMAGE_EXT if kind in ("图集", "实况") else VIDEO_EXT
-        if not (files_exist(pat_new, exts) or files_exist(pat_old, exts)):
+        if not (
+            files_exist(pat_new, exts)
+            or files_exist(pat_old, exts)
+            or files_exist_any_nick(pat_new.parent, wid, exts)
+        ):
             missing[wid] = pat_new
 
     # 3. 读库

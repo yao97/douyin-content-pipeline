@@ -34,6 +34,9 @@ URLS = [
     "https://www.douyin.com/user/MS4wLjABAAAAZEmLB0RZLBH8AMgYtqbfWLOqsat4V517JgiMGIgftrg4XQJTlDi825j62bBCAHPA/",
     "https://www.douyin.com/user/MS4wLjABAAAAmzpumPP3aCkq9MYSbZTURI1WOgf9V3jB79p2wmXe_klj3N5VZY1SVBK9WhitUzrO/",
     "https://www.douyin.com/user/MS4wLjABAAAAGX8qq2pOnstrEPv6QjiVY1hQHhpCUHQWUcGikJ7Z_iCcX2tUFBdS9QGtCtANOiHk/",
+    # 2026-10-03 新增：程前朋友圈（UID 3276187176547131）→ 常年采集，
+    # 存量 81 个 m4a 已于 10-03 用 _seed_done.py --apply 写回 download_data，不会重下
+    "https://www.douyin.com/user/MS4wLjABAAAAGBna-_q1fATnLEw6bME0dGVEol0Ju4ZXHFTvn3lUOTijO2YOTrL6H6eBWmt9qmSB/",
 ]
 
 
