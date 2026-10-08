@@ -124,9 +124,14 @@ def snapshot():
     done_dur = sum(t.get("dur_csv") or 0 for t in done)
 
     # 产出统计
-    md_total = len(glob.glob(os.path.join(HERE, "*", "*.md")))
+    # ⚠️ 2026-10-08 修正：博主目录已重构为 `OUT_ROOT/博主/<作者>/`（2026-10-03 起）。
+    # 原来这里 glob(HERE/*/*.md) 是**根目录下一层**，重构后 md 实际在**两层**下，
+    # 于是恒定匹配 0 篇 → 快照里「逐字稿 md 总数」永远是 0（与 verify_all.py 同一类毛病：
+    # 都写死了旧源口径、忽略 WB_SOURCE）。改用 asr_batch 的 AUTHORS_DIR 常量，别再自己拼路径。
+    md_files = glob.glob(os.path.join(B.AUTHORS_DIR, "*", "*.md"))
+    md_total = len(md_files)
     md_by_author = collections.Counter()
-    for f in glob.glob(os.path.join(HERE, "*", "*.md")):
+    for f in md_files:
         md_by_author[os.path.basename(os.path.dirname(f))] += 1
 
     s1_pid, s1_alive = _lock_owner("stage1")

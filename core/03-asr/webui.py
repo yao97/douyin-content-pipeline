@@ -487,6 +487,11 @@ def live_state():
     out = {
         "stage1": s1, "stage2": _alive("stage2"), "asr": _asr_up(),
         "total": len(tasks), "done": sum(1 for t in tasks if t["vid"] in ok),
+        # 待转写的条数与剩余音频小时数：前端进度卡要直接显示「还剩多少」。
+        # 少了这两个字段，首页 JS 里的 d.todo_h 会是 undefined → 显示 "undefined h"。
+        "todo": sum(1 for t in tasks if t["vid"] not in ok),
+        "todo_h": round(sum((t.get("dur_csv") or 0) for t in tasks
+                            if t["vid"] not in ok) / 3600.0, 2),
         "item": None, "job": None, "item_percent": 0.0, "slice": None,
         "stream": "", "stream_chars": 0,
         "silent_sec": round(prog["silent_sec"], 1) if prog else None,
@@ -1038,12 +1043,12 @@ HOME_BODY = """
   <div class="stat"><div class="k">转写进度</div>
     <div class="v" id="s-done">{{ p.done }}<span style="font-size:15px;color:#6b7280"> / {{ p.total }}</span></div>
     <div class="bar"><i id="s-bar" style="width:{{ p.percent }}%"></i></div>
-    <div class="s" id="s-pct">已完成 {{ p.percent }}%</div></div>
+    <div class="s" id="s-pct">已完成 {{ p.percent }}%　·　<b style="color:#dc2626">还剩 {{ p.todo }} 条</b>（约 {{ '%.1f'|format(p.todo_h) }} h 音频）</div></div>
   <div class="stat"><div class="k">逐字稿篇数</div><div class="v">{{ p.md_total }}</div>
     <div class="s">共 {{ '{:,}'.format(p.chars_total) }} 字</div></div>
   <div class="stat"><div class="k">已完成音频</div>
     <div class="v">{{ '%.1f'|format(p.done_h) }}<span style="font-size:15px;color:#6b7280"> h</span></div>
-    <div class="s">剩余 {{ '%.2f'|format(p.todo_h) }} h · {{ p.todo }} 条</div></div>
+    <div class="s">已转写 {{ p.done }} 条 / 共 {{ p.total }} 条</div></div>
   <div class="stat"><div class="k">组件状态</div>
     {% set idle = (p.todo == 0) %}
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
@@ -1054,16 +1059,17 @@ HOME_BODY = """
     <div class="s" style="margin-top:7px">索引更新于 {{ p.index_ts }}</div></div>
 </div>
 
-{% if p.todo %}<div class="note" style="margin:16px 0">还有 {{ p.todo }} 条待转写（剩余音频
-{{ '%.2f'|format(p.todo_h) }} 小时）。{% if p.abandoned %}其中 {{ p.abandoned }} 条已标记为失败或待处理。{% endif %}</div>{% endif %}
+{% if p.todo %}<div class="note" style="margin:16px 0">📌 <b>还有 {{ p.todo }} 条待转写</b>，剩余音频
+{{ '%.2f'|format(p.todo_h) }} 小时{% if p.abandoned %}；其中 {{ p.abandoned }} 条已标记为失败或待处理{% endif %}。
+（进度卡里的「{{ p.done }} / {{ p.total }}」= 已完成 / 任务总数，不是本轮计数）</div>{% endif %}
 
 <div class="card">
  <h2><span class="lv-live"></span> 实时转写
-   <span class="badge" id="lv-badge">{% if l.item %}{{ l.item.idx }} / {{ l.item.total }} 条{% else %}空闲{% endif %}</span>
+   <span class="badge" id="lv-badge">{% if l.item %}本轮第 {{ l.item.idx }} 条 / 全库 {{ l.item.total }} 条{% else %}空闲{% endif %}</span>
    <span style="flex:1"></span>
    <span class="muted" id="lv-clock">更新于 {{ l.ts }}</span></h2>
  <div class="lv-title" id="lv-title">{% if l.item %}{{ l.item.title or l.item.vid }}{% else %}当前没有在转写的条目{% endif %}</div>
- <div class="muted" id="lv-meta">{% if l.item %}{{ l.item.author }} · {{ l.item.pub }} · 作品ID {{ l.item.vid }} · 音频 {{ '%.1f'|format(l.item.dur_sec/60) }} 分钟{% else %}已完成 {{ l.done }} / {{ l.total }} 条{% endif %}</div>
+ <div class="muted" id="lv-meta">{% if l.item %}{{ l.item.author }} · {{ l.item.pub }} · 作品ID {{ l.item.vid }} · 音频 {{ '%.1f'|format(l.item.dur_sec/60) }} 分钟{% else %}全库已完成 {{ l.done }} / {{ l.total }} 条，剩 {{ l.total - l.done }} 条{% endif %}</div>
  <div class="bar lv-bar"><i id="lv-bar" style="width:{{ l.item_percent }}%"></i></div>
  <div class="lv-row">
    <span class="pill" id="lv-status">{% if l.job %}{{ l.job.status }} · {{ l.item_percent }}%{% else %}待命{% endif %}</span>
@@ -1141,7 +1147,9 @@ function lvTick(){
     var stm=document.getElementById('lv-stream');
     set('lv-clock','更新于 '+d.ts);
     if(d.item){
-      badge.textContent = d.item.idx+' / '+d.item.total+' 条';
+      // ⚠️ 措辞要说清：idx 是「stage1 本轮跑到第几条」，total 是**全库任务总数**。
+      // 写成裸的 "101 / 1421 条" 会被误读成「还剩 1300 条」——2026-10-08 老板实际这么读了。
+      badge.textContent = '本轮第 '+d.item.idx+' 条 / 全库 '+d.item.total+' 条';
       set('lv-title', d.item.title || d.item.vid);
       set('lv-meta', d.item.author+' · '+d.item.pub+' · 作品ID '+d.item.vid
           +' · 音频 '+(d.item.dur_sec/60).toFixed(1)+' 分钟');
@@ -1189,7 +1197,14 @@ function lvTick(){
     if(dn) dn.innerHTML=d.done+'<span style="font-size:15px;color:#6b7280"> / '+d.total+'</span>';
     var pct=d.total?(d.done/d.total*100):0;
     var bb=document.getElementById('s-bar'); if(bb) bb.style.width=pct.toFixed(1)+'%';
-    var pp=document.getElementById('s-pct'); if(pp) pp.textContent='已完成 '+pct.toFixed(1)+'%';
+    // 进度卡副标题：**必须同时给出「还剩多少条 + 多少小时」**。
+    // 原来只有「已完成 X%」，想看剩多少得点进别的页面；而旁边「实时转写」的本轮序号
+    // 又是另一套数字，两处摆一起必然被误读。
+    var pp=document.getElementById('s-pct');
+    if(pp){
+      pp.innerHTML='已完成 '+pct.toFixed(1)+'%　·　<b style="color:#dc2626">还剩 '
+        +(d.total-d.done)+' 条</b>（约 '+(d.todo_h||0).toFixed(1)+' h 音频）';
+    }
   }).catch(function(){});
 }
 lvTick(); setInterval(lvTick, 1200);
