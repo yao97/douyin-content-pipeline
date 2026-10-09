@@ -342,6 +342,52 @@ def mark_ok(vid, data):
         "job_id": data.get("job_id", ""),
         "ts": datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S"),
     }, remove=("attempts", "why", "abandoned", "low_content", "note"))
+    _gc_slice_tmp(vid)
+
+
+# ── 切片缓存自动清理（A 方案，2026-10-09）──
+# 背景：`_slice_tmp/<vid>/` 存的是切片转写时的段 wav + seg_XXX.json，只用于**断点续跑**。
+# 全段完成后合并成标准 raw 并 mark_ok → 这些段就是纯垃圾，且不清理会长到把盘撑爆：
+# 实测 2026-10-09 涨到 **19GB**，把 D 盘（214G）撑到 **100% 满 / Avail=0**，
+# 随后 stage1 在 `save_registry()` 抛 `OSError: [Errno 28]` 崩溃（注册表就在 D 盘）。
+# 所以必须挂在 mark_ok 之后自动清，而不是等人工想起来。
+SLICE_GC = os.environ.get("WB_SLICE_GC", "1") == "1"   # 开关，留 0 可临时关闭
+
+
+def _gc_slice_tmp(vid):
+    """删掉某作品的切片段缓存（作品已 ok 之后才调）。
+
+    三重保险，任何一条不满足就**原样跳过、绝不删**：
+      ① `WB_SLICE_GC=0` 开关关着→ 跳过
+      ② 注册表该条 `ok` 不为真 → 跳过（**防正在转写的段被误删**，最关键的一条）
+      ③ raw 主文件不存在 → 跳过（raw 没了、段缓存是唯一副本，删了就真丢）
+
+    删失败只打印不抛：清理是「锦上添花」，绝不能因为删不掉而让一次成功的转写报失败。
+    """
+    if not SLICE_GC:
+        return
+    try:
+        if not (entry(vid) or {}).get("ok"):
+            return                      # 保险②：还没成功，段缓存还得留着续跑
+        raw_p = os.path.join(RAW_DIR, vid + ".json")
+        if not os.path.exists(raw_p):
+            return                      # 保险③：raw 不在，段是唯一副本，不动
+        d = os.path.join(SLICE_DIR, vid)
+        if not os.path.isdir(d):
+            return
+        freed = 0
+        for root, _, files in os.walk(d):
+            for f in files:
+                try:
+                    freed += os.path.getsize(os.path.join(root, f))
+                except OSError:
+                    pass
+        import shutil
+        shutil.rmtree(d)
+        print(f"[gc] 已清切片缓存 {vid} 释放 {freed/2**30:.2f}GB", flush=True)
+    except Exception as e:
+        print(f"[gc] 清理切片缓存失败 {vid}（忽略）: {type(e).__name__}: {str(e)[:80]}",
+              flush=True)
 
 
 def mark_bad(vid, why=""):
