@@ -26,6 +26,22 @@ import lib_source
 OUT_ROOT = B.OUT_ROOT
 AUTHORS_DIR = B.AUTHORS_DIR
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+
+# ── 机器显示名（owner id → 中文标签）──
+# 2026-10-10：原来硬编码 `{'host':'本机','remote':'外机'}`，
+#「remote」太含糊 —— 看板上完全看不出是哪台机器在跑。
+# 改成可配置（本机默认名可在 config 里覆盖），且**未登记的机器原样显示其 id**
+# （新机器接入时能立刻认出，不会被静默归到别的桶里）。
+MACHINE_NAMES = {
+    "host": os.environ.get("WB_NAME_HOST", "本机"),
+    "remote": os.environ.get("WB_NAME_REMOTE", "Mac mini 转写机"),
+}
+
+
+def machine_label(owner):
+    """机器显示名。已登记的走 MACHINE_NAMES，未登记的原样返回 id（不猜、不吞）。"""
+    o = str(owner or "?").strip() or "?"
+    return MACHINE_NAMES.get(o, o)
 FIELDS = ("作者", "抖音账号", "作品ID", "视频标题", "发布时间", "关键词", "视频封面")
 FIELD_RE = re.compile(r"^(" + "|".join(FIELDS) + r")：(.*)$")
 COVER_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
@@ -189,9 +205,22 @@ def _pid_from_lock(name):
         return None
 
 
-def _alive(name):
+# 进程存活检查：底层 B._pid_alive 是 tasklist 子进程（Windows 每次 ~0.5s），
+# 每 1.2s 的 /api/live 轮询要跑两次（stage1+stage2）→ 整页被拖慢 ~1s。
+# 长时间运行的守护进程（stage1/stage2）存活状态不会在几秒内翻转，
+# 加 TTL 缓存：看板最多只晚 3s 发现「进程刚死」，换来每次轮询瞬时返回。
+# 用 (name, pid) 做键 —— 进程重启（pid 变了）会立刻绕过缓存重新探活。
+_ALIVE_CACHE = {}
+def _alive(name, ttl=3.0):
     pid = _pid_from_lock(name)
-    return bool(pid) and B._pid_alive(pid)
+    key = (name, pid)
+    now = time.time()
+    c = _ALIVE_CACHE.get(key)
+    if c is not None and now - c[0] < ttl:
+        return c[1]
+    alive = bool(pid) and B._pid_alive(pid)
+    _ALIVE_CACHE[key] = (now, alive)
+    return alive
 
 
 ASR_API = os.environ.get("WB_ASR_API", "http://127.0.0.1:8766")   # 可用环境变量覆盖（跨机时指外机 8766）
@@ -199,14 +228,11 @@ STREAM_MARK = "[Qwen3-ASR] 转写中:"
 STREAM_END = "[Qwen3-ASR] 完成:"
 
 
+# 8766 在线状态由后台 `_asr_prober` 线程维护（见下方），看板请求只读这个标志，
+# 不再每次轮询都同步打 8766（双机压满 GPU 时那一下要几秒，会把整页卡住）。
+_ASR_ALIVE = True
 def _asr_up():
-    try:
-        import requests
-        s = requests.Session(); s.trust_env = False
-        s.get(ASR_API + "/", timeout=3)
-        return True
-    except Exception:
-        return False
+    return _ASR_ALIVE
 
 
 def _asr_get(path, timeout=5):
@@ -244,21 +270,29 @@ _HIST = {"ts": 0.0, "items": []}
 
 
 def _asr_history(ttl=3.0):
-    """作业历史（带短 TTL 缓存）。
+    """作业历史。
 
-    `live_state()` 会对**每个未完成任务**判断有没有活跃作业，逐个去查等于几百次
-    HTTP 请求。这里取一次、缓存几秒，扫描全在本地做。
+    ⚠️ 改为**只读缓存**：真实数据由后台 `_asr_prober` 线程每 2s 拉取刷新，
+    看板请求不再同步打 8766（双机压满 GPU 时 8766 响应会飙到几秒，会卡整页）。
+    仅在 prober 还没跑过的首启瞬间，才退化为一次阻塞拉取兜底。
     """
-    now = time.time()
-    if _HIST["items"] and now - _HIST["ts"] < ttl:
+    if _HIST["items"]:
         return _HIST["items"]
     try:
         items = _asr_get("/api/history/transcribe?limit=60").get("items", []) or []
         _HIST["items"] = items
-        _HIST["ts"] = now
+        _HIST["ts"] = time.time()
     except Exception:
         pass
     return _HIST["items"]
+
+
+# 8766 的 /api/status 实时状态：仅命中缓存，冷数据由后台 `_asr_prober` 填充。
+# 这样看板请求绝不被 8766 的 GPU 负载卡住（最多牺牲 ~2s 新鲜度）。
+_STATUS_CACHE = {}
+def _asr_status(job_id):
+    c = _STATUS_CACHE.get(job_id)
+    return c[1] if c else None
 
 
 def _asr_job_for(vid, items=None):
@@ -290,13 +324,60 @@ def _asr_job_for(vid, items=None):
     # 取最新提交的语义也更清晰：同 vid 的多次提交里，最后一次才是当前有效的。
     pick = cand[0]
     try:
-        st = _asr_get("/api/status/" + str(pick["job_id"]))
+        st = _asr_status(str(pick["job_id"]))
     except Exception:
         return None
     if st.get("error"):
         return None
     st["_created_at"] = pick.get("created_at")
     return st
+
+
+# ── 后台 prober：把 8766 查询从「看板请求内同步」改成「后台周期刷新缓存」──
+# 双机并行把 GPU 压满时，8766 的 /api/history、/api/status 会间歇性卡几秒；
+# 原来 live_state 每 1.2s 轮询都同步等它们 → 整页 6~10s 卡死。
+# 现在 prober 每 2s 拉一次写进 _HIST / _STATUS_CACHE / _ASR_ALIVE，请求只命中缓存、瞬时返回。
+def _asr_prober():
+    global _ASR_ALIVE
+    while True:
+        try:
+            items = _asr_get("/api/history/transcribe?limit=60").get("items", []) or []
+            _HIST["items"] = items
+            _HIST["ts"] = time.time()
+            _ASR_ALIVE = True
+            now = time.time()
+            for it in items:
+                st = it.get("status")
+                if st in ("transcribing", "waiting", "audio_ready"):
+                    jid = it.get("job_id")
+                    if jid:
+                        try:
+                            _STATUS_CACHE[str(jid)] = (now, _asr_get("/api/status/" + str(jid)))
+                        except Exception:
+                            pass
+            if len(_STATUS_CACHE) > 500:          # 防无限增长（已完成 job 不再查，活着的有限）
+                _STATUS_CACHE.clear()
+        except Exception:
+            _ASR_ALIVE = False
+        time.sleep(2)
+
+
+_PROBER_STARTED = False
+def _start_prober():
+    global _PROBER_STARTED
+    if _PROBER_STARTED:
+        return
+    _PROBER_STARTED = True
+    threading.Thread(target=_asr_prober, name="asr-prober", daemon=True).start()
+
+
+_start_prober()
+# 启动即预热 _alive 缓存（stage1/stage2 存活），避免首个 /api/live 轮询
+# 触发冷 tasklist 子进程（~1s）。3s TTL 内后续每 1.2s 轮询都命中缓存、瞬时返回。
+try:
+    _alive("stage1"); _alive("stage2")
+except Exception:
+    pass
 
 
 def _slice_progress(vid):
@@ -401,19 +482,28 @@ def _active_vid(tasks, ok, items=None):
         if ev > live.get(m.group(1), (-1, 0.0)):
             live[m.group(1)] = ev
 
+    # 一次性列出 _slice_tmp 下「正在切片」的 vid（通常只有 1~3 条），
+    # 替代「对 ~3700 条未完成任务逐条 os.path.isdir」—— 把数千次 stat syscall
+    # 降到 1 次 listdir + 极少数 isdir，_active_vid 从 ~0.37s 降到 <0.01s。
+    try:
+        _slicing = set(os.listdir(B.SLICE_DIR))
+    except Exception:
+        _slicing = set()
+
     best = None
     for t in tasks:
         vid = str(t.get("vid") or "")
         if not vid or vid in ok:
             continue
         ev = live.get(vid)
-        d = os.path.join(B.SLICE_DIR, vid)
-        if os.path.isdir(d):
-            mt = _slice_mtime(d)
-            if mt and now - mt <= LIVE_SLICE_SEC:
-                ev2 = (0, mt)
-                if ev is None or ev2 > ev:
-                    ev = ev2
+        if vid in _slicing:
+            d = os.path.join(B.SLICE_DIR, vid)
+            if os.path.isdir(d):
+                mt = _slice_mtime(d)
+                if mt and now - mt <= LIVE_SLICE_SEC:
+                    ev2 = (0, mt)
+                    if ev is None or ev2 > ev:
+                        ev = ev2
         if ev is None:
             continue
         if best is None or ev > best[0]:
@@ -457,6 +547,26 @@ def _stream_text(limit=4000):
 RTF = float(os.environ.get("WB_RTF", "0.85"))     # 端到端有效实时率（估进度用）
 
 
+# ── build_lib_tasks 全量扫库缓存 ──
+# build_lib_tasks() 每次要扫 7977 条视频 + 读 Data/*.csv，实测 ~6s，但库增长很慢。
+# 不放缓存的话，每 1.2s 一次的 /api/live 轮询和每次页面加载都重扫一遍 → 看板卡死。
+# 进度展示用 20s 缓存完全够（「正在转写」的 active 计数来自 _claims 实时扫描，不受影响）。
+_LIBTASKS_CACHE = {"ts": 0.0, "val": None}
+def _cached_lib_tasks(ttl=20.0):
+    now = time.time()
+    if _LIBTASKS_CACHE["val"] is not None and now - _LIBTASKS_CACHE["ts"] < ttl:
+        return _LIBTASKS_CACHE["val"]
+    try:
+        v = lib_source.build_lib_tasks()
+    except Exception:
+        if _LIBTASKS_CACHE["val"] is not None:
+            return _LIBTASKS_CACHE["val"]   # 扫描失败 → 返回上次成功结果，别让看板崩
+        return []
+    _LIBTASKS_CACHE["val"] = v
+    _LIBTASKS_CACHE["ts"] = now
+    return v
+
+
 def live_state():
     """实时转写状态：当前条目 + 真实进度 + 服务端作业状态 + 流式文本。
 
@@ -466,10 +576,7 @@ def live_state():
     但对「还有多久」的感知足够。已跑时长取服务端的 elapsed_sec（真实耗时，非估算）。
     """
     prog = _stage1_progress()
-    try:
-        tasks = lib_source.build_lib_tasks()
-    except Exception:
-        tasks = []
+    tasks = _cached_lib_tasks()
     reg = B.load_registry()
     ok = {v for v, m in reg.items() if m.get("ok")}
 
@@ -497,6 +604,50 @@ def live_state():
         "silent_sec": round(prog["silent_sec"], 1) if prog else None,
         "ts": time.strftime("%H:%M:%S"),
     }
+    # ── 分机进度（本机 host / 外机 remote）──
+    # 注册表 mark_ok 现带 machine 字段（产出该条的真实机器）；外机 raw 由本机补登记时
+    # 透传 raw 内嵌的 machine。claim 文件带 owner（实时在转哪条）。
+    # 历史条目（machine 字段缺失，claim 模式启用前已完成）计入 legacy_done，不并入任何机器。
+    _m_done, _legacy_done = {}, 0
+    for _v, _m in reg.items():
+        if not _m.get("ok"):
+            continue
+        _mc = _m.get("machine")
+        if _mc:
+            _m_done[_mc] = _m_done.get(_mc, 0) + 1
+        else:
+            _legacy_done += 1
+    _task_by_vid = {str(t.get("vid")): t for t in tasks}
+    _m_active = {}        # owner -> [ {vid,author,title} ]
+    # 不依赖 webui 自身是否 import 时拿到 WB_CLAIM：只要 _claims 目录存在（任一机器
+    # 开启了 claim 模式）就扫描，实时反映「谁正在转哪条」。
+    if os.path.isdir(B.CLAIM_DIR):
+        for _fn in os.listdir(B.CLAIM_DIR):
+            if not _fn.endswith(".claim"):
+                continue
+            _vid = _fn[:-len(".claim")]
+            try:
+                _cd = json.load(open(os.path.join(B.CLAIM_DIR, _fn), encoding="utf-8"))
+                _owner = str(_cd.get("owner", "?")).strip() or "?"
+            except Exception:
+                _owner = "?"
+            _t = _task_by_vid.get(str(_vid), {})
+            _m_active.setdefault(_owner, []).append({
+                "vid": _vid, "author": _t.get("author") or "",
+                "title": (str(_t.get("title") or "")).strip()})
+    _machines = {}
+    for _owner in set(list(_m_done) + list(_m_active) + ["host", "remote"]):
+        _machines[_owner] = {
+            "done": _m_done.get(_owner, 0),
+            "active": len(_m_active.get(_owner, [])),
+            "active_list": _m_active.get(_owner, [])[:6],
+        }
+    _ord = lambda o: (0 if o == "host" else (1 if o == "remote" else 2),
+                      -_machines[o]["done"])
+    out["machines"] = {k: _machines[k] for k in sorted(_machines, key=_ord)}
+    # 每台机器的中文显示名一并下发，前端直接取用（不再在前端硬编码映射表）
+    out["machine_labels"] = {k: machine_label(k) for k in out["machines"]}
+    out["legacy_done"] = _legacy_done
     cand = _active_vid(tasks, ok)
     if cand is None and s1 and prog and tasks and prog["total"] == len(tasks):
         idx = prog["done"] + 1
@@ -865,10 +1016,7 @@ def download_state(force=False):
 
 def progress_data():
     c = build_index()
-    try:
-        tasks = lib_source.build_lib_tasks()
-    except Exception:
-        tasks = []
+    tasks = _cached_lib_tasks()
     reg = B.load_registry()
     ok = {v for v, m in reg.items() if m.get("ok")}
 
@@ -937,6 +1085,12 @@ tr:hover td{background:#fafbfc}
 .tags{display:flex;gap:6px;flex-wrap:wrap}
 .tag{background:#eff6ff;color:#1d4ed8;border-radius:6px;padding:2px 8px;font-size:12px;white-space:nowrap}
 .tag.gray{background:var(--soft);color:var(--dim)}
+.mc{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:15px 16px}
+.mc-h{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+.mc-h b{font-size:15px}
+.mc-v{font-size:24px;font-weight:700;letter-spacing:-.5px}
+.mc-s{font-size:12.5px;color:var(--dim);margin-top:4px}
+.mc-more{font-size:12px;color:var(--dim);margin-top:3px}
 input.q{width:100%;max-width:420px;padding:9px 13px;border:1px solid var(--line);border-radius:9px;font-size:14px;background:#fff;color:var(--txt)}
 input.q:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(37,99,235,.12)}
 .btn{display:inline-block;padding:8px 15px;border-radius:9px;background:var(--accent);color:#fff;font-size:14px;border:none;cursor:pointer}
@@ -1086,6 +1240,26 @@ HOME_BODY = """
 </div>
 
 <div class="card">
+ <h2>🖥️ 分机转写进度
+   <span class="badge" id="mc-badge"></span>
+   <span style="flex:1"></span>
+   <span class="muted" id="mc-legend">{% for owner, nm in l.machine_labels.items() %}{{ nm }}{% if not loop.last %} · {% endif %}{% endfor %}</span></h2>
+ <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr))" id="mc-grid">
+ {% for owner, m in l.machines.items() %}
+   <div class="mc" data-owner="{{ owner }}">
+     <div class="mc-h"><span class="dot {{ 'on' if m.active else '' }}"></span>
+       <b>{{ l.machine_labels.get(owner, owner) }}</b>
+       <span class="muted" style="font-size:12px">{{ owner }}</span></div>
+     <div class="mc-v">{{ m.done }}<span style="font-size:14px;color:#6b7280"> / {{ l.total }} 已完成</span></div>
+     <div class="mc-s">正在转写 <b>{{ m.active }}</b> 条{% if m.active_list %} · {{ m.active_list[0].author }}《{{ (m.active_list[0].title or '')[:18] }}》{% endif %}</div>
+     {% if m.active > 1 %}<div class="mc-more">+{{ m.active-1 }} 条…</div>{% endif %}
+   </div>
+ {% endfor %}
+ </div>
+ <div class="muted" style="margin-top:10px" id="mc-legacy">历史未标记 {{ l.legacy_done }} 条（claim 模式启用前的已完成条目，不分机器）</div>
+</div>
+
+<div class="card">
  <h2>📥 视频下载进度
    <span class="badge" id="dl-badge">已下载 {{ dl.downloaded }} / {{ dl.effective_total }} 条</span>
    <span class="badge" id="dl-pend">{% if dl.pending %}剩余 {{ dl.pending }} 条 · 约 {{ '%.1f'|format(dl.pending_sec/3600) }} h{% else %}已下完{% endif %}</span>
@@ -1204,6 +1378,45 @@ function lvTick(){
     if(pp){
       pp.innerHTML='已完成 '+pct.toFixed(1)+'%　·　<b style="color:#dc2626">还剩 '
         +(d.total-d.done)+' 条</b>（约 '+(d.todo_h||0).toFixed(1)+' h 音频）';
+    }
+    // ── 分机进度卡：按 d.machines 实时重渲染（host/remote + 动态其他机器）──
+    var mg=document.getElementById('mc-grid');
+    if(mg && d.machines){
+      // 显示名由后端 machine_labels 下发（Python 侧 MACHINE_NAMES 是唯一真源）。
+      // 原来这里硬编码 {host:'本机',remote:'外机'} —— 「外机」看不出是哪台机器，
+      // 且新增机器没登记时会被静默显示成 id。2026-10-10 改为一律取后端标签。
+      var _lbl=d.machine_labels||{};
+      var _parts=Object.keys(d.machines).map(function(owner){
+        var m=d.machines[owner];
+        var al=m.active_list||[];
+        var _nm=_lbl[owner]||owner;
+        var _head=al.length ? (esc(al[0].author)+'《'+esc((al[0].title||'').slice(0,18))+'》') : '';
+        var _more=m.active>1 ? ('<div class="mc-more">+'+ (m.active-1) +' 条…</div>') : '';
+        return '<div class="mc" data-owner="'+esc(owner)+'">'
+          +'<div class="mc-h"><span class="dot '+ (m.active?'on':'') +'"></span>'
+          +'<b>'+esc(_nm)+'</b> <span class="muted" style="font-size:12px">'+esc(owner)+'</span></div>'
+          +'<div class="mc-v">'+m.done+'<span style="font-size:14px;color:#6b7280"> / '+d.total+' 已完成</span></div>'
+          +'<div class="mc-s">正在转写 <b>'+m.active+'</b> 条'+(_head?(' · '+_head):'')+'</div>'
+          +_more+'</div>';
+      });
+      mg.innerHTML=_parts.join('');
+      var _lg=document.getElementById('mc-legacy');
+      if(_lg) _lg.textContent='历史未标记 '+ (d.legacy_done||0) +' 条（claim 模式启用前的已完成条目，不分机器）';
+      // 顶部徽标：各机在转几条（遍历全部机器，不再只认 host/remote 两个）
+      var _hb=document.getElementById('mc-badge');
+      if(_hb){
+        var _bits=[];
+        Object.keys(d.machines).forEach(function(o){
+          if(d.machines[o] && d.machines[o].active)
+            _bits.push((_lbl[o]||o)+'在转 '+d.machines[o].active+' 条'); });
+        _hb.textContent=_bits.join(' · ');
+        _hb.style.display=_bits.length?'':'none';
+      }
+      var _lgd=document.getElementById('mc-legend');
+      if(_lgd && d.machine_labels){
+        _lgd.textContent=Object.keys(d.machine_labels)
+          .map(function(o){ return d.machine_labels[o]; }).join(' · ');
+      }
     }
   }).catch(function(){});
 }

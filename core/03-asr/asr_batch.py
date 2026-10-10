@@ -10,6 +10,7 @@
   python asr_batch.py all [limit]
   python asr_batch.py slice <vid> [每段秒数]   # 指定作品切片转写并合并（可断点续跑）
   python asr_batch.py slice-all [门槛秒数]     # 批量切片处理「未完成且超长」的作品
+  python asr_batch.py ingest [--quiet]         # 补登记外机已转完但未进注册表的 raw（外机只写 raw）
 
 长视频策略（2026-09-28 起）:
   时长 ≥ `WB_SLICE_MIN`(默认 1200s = **20 分钟**) 视为**长视频**，
@@ -17,7 +18,7 @@
   每段结果独立落盘 `_slice_tmp/<vid>/<tag>/seg_XXX.json`，崩了能断点续跑。
   可用 `WB_SLICE_AUTO=0` 关掉自动切片（退回整条提交）。
 """
-import os, sys, json, time, re, shutil, subprocess, base64, gzip, glob, math, threading
+import os, sys, json, time, re, shutil, subprocess, base64, gzip, glob, math, threading, platform
 from datetime import datetime, timezone, timedelta
 
 import requests
@@ -60,6 +61,25 @@ os.makedirs(AUTHORS_DIR, exist_ok=True)
 # 不完整的一律重新进入转写流程。
 REGISTRY  = os.path.join(OUT_ROOT, "_asr_registry.json")
 REG_LOCK  = REGISTRY + ".lock"      # 注册表「读-改-写」互斥锁（见 _reg_guard）
+
+# ── 跨机转写协调（claim）──
+# 两台机器跑同一份库（WB_SOURCE=lib、OUT_ROOT 指向同一共享目录）时，
+# "已完成"靠 is_transcribed()（raw 存在即视为成功）判跳过；但**"转写中"**
+# 缺一个可见标记 —— 若两台都用同一个空 split 配置，会同时抢同一批"未完成"
+# 视频，造成重复劳动（一条 13s 的白跑是小，关键是两台都写同一份 raw 互相覆盖）。
+# 解决：每个视频一个 claim 文件，O_EXCL 原子创建 → 谁先建到谁占有，另一台
+# 看到 claim 即跳过。claim 记 owner(机器ID)/pid/ts；owner 进程死了或超 TTL →
+# 陈旧可回收（另一台崩溃遗留的 claim 不会永久卡住该视频）。
+# ⚠️ 与"按作者切分"是正交的：claim 解决"同库无切分时抢同一批"；切分解决
+# "按账号物理分摊"。两者可叠加。默认 WB_CLAIM=0（关）→ 对单机/现有行为零变化。
+CLAIM_DIR    = os.path.join(OUT_ROOT, "_claims")
+MACHINE_ID   = os.environ.get("WB_MACHINE_ID", platform.node() or "host")
+CLAIM_TTL    = int(os.environ.get("WB_CLAIM_TTL", "3600"))   # 秒；claim 最大存活（含超长切片）
+CLAIM_ENABLED = os.environ.get("WB_CLAIM", "0") == "1"
+# 注册表单一写者原则：claim 模式下只有 host（MACHINE_ID=host）写 _asr_registry.json，
+# 外机只写 raw（共享 _asr_raw）+ claim，由 host 的 is_transcribed(raw 存在) 自动 ingest。
+# 否则两台同时写注册表会回到"无锁整表回写静默丢更新"的老坑（实测丢 82.5%）。
+REG_WRITE   = not (CLAIM_ENABLED and MACHINE_ID and MACHINE_ID != "host")
 MIN_CHARS    = int(os.environ.get("WB_MIN_CHARS", "10"))     # 有效转写的最少字符数
 MAX_ATTEMPTS = int(os.environ.get("WB_MAX_ATTEMPTS", "2"))   # 单条最多重试几次后放弃
 
@@ -103,10 +123,40 @@ def load_registry():
     return {}
 
 
-def save_registry(reg):
+def save_registry(reg, retries=3):
+    """原子写注册表（先写 .tmp 再 os.replace）。
+
+    🔴 为什么需要重试（2026-10-10 修D22）：
+    `os.replace` 在 Windows 上要求目标文件**不被任何句柄以禁止删除的方式打开**。
+    读侧 `_reg()` 用普通 `open()`（默认无 FILE_SHARE_DELETE）→ 别的进程（另一个
+    stage1/stage2/webui，或本进程自己的另一个读句柄）恰好在读注册表时，
+    写侧的 `os.replace` 就会抛 `[WinError 5] 拒绝访问`。
+
+    这个失败**不是数据问题**（`.tmp` 已写好，raw/md 也都产出了），只是本次标记没落地；
+    但若不重试就会把「一次成功」变成「抛异常崩掉」，实测会让 `ingest` 这类批量操作中途夭折
+    （补登记 176 条只成了 80 条就中断）。重试 3 次、每次间隔递增，覆盖读句柄的短暂窗口。
+    """
     tmp = REGISTRY + ".tmp"
     json.dump(reg, open(tmp, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-    os.replace(tmp, REGISTRY)
+    last = None
+    for i in range(max(1, retries)):
+        try:
+            os.replace(tmp, REGISTRY)
+            return
+        except PermissionError as e:
+            # [WinError 5] 拒绝访问 = 目标正被别的读句柄占着（D22），等一下再试
+            last = e
+            if i < retries - 1:
+                time.sleep(0.15 * (i + 1))
+                # 复写 tmp：上一次 replace 失败时 tmp 仍在，但为防被并发清掉，重写一遍更稳
+                if not os.path.exists(tmp):
+                    json.dump(reg, open(tmp, "w", encoding="utf-8"),
+                              ensure_ascii=False, indent=1)
+    # 重试耗尽仍失败：明确抛 D22 说明，绝不静默丢数据
+    raise PermissionError(
+        "注册表写入失败（D22 读句柄占用，重试 %d 次仍被拒）: %s -> %s；"
+        "数据未丢，.tmp 仍在 %s，下次跑批会自动补登记"
+        % (retries, tmp, REGISTRY, tmp)) from last
 
 
 # ── 注册表互斥用的跨平台「内核字节锁」原语 ──
@@ -333,6 +383,8 @@ def is_transcribed(vid):
 
 def mark_ok(vid, data):
     """登记一条成功的转写"""
+    if not REG_WRITE:
+        return
     update_entry(vid, {
         "ok": True,
         "author": data.get("author", ""),
@@ -341,6 +393,11 @@ def mark_ok(vid, data):
         "chars": len((data.get("text") or "").strip()),
         "job_id": data.get("job_id", ""),
         "ts": datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S"),
+        # machine：产出该条的真实机器（host 本机 / remote 外机 Mac）。
+        # 调用方必须把 machine 带进 data —— 转写时在 payload 里 stamp 了 MACHINE_ID，
+        # 补登记时读 raw 内嵌的 machine（外机 raw 由外机 stamp 成 remote，本机补登记透传）。
+        # claim 模式启用前已完成的条目无此字段 → 看板归入「历史未标记」桶，不分机器。
+        "machine": data.get("machine"),
     }, remove=("attempts", "why", "abandoned", "low_content", "note"))
     _gc_slice_tmp(vid)
 
@@ -399,6 +456,8 @@ def mark_fail(vid, why):
     """记录一次失败的转写。达到 MAX_ATTEMPTS 后标记为 abandoned，不再反复重试
     （避免"本就几乎无语音"的视频每次重跑都被无限重试）
     """
+    if not REG_WRITE:
+        return
     e = entry(vid)                      # 从磁盘取最新，避免用旧缓存的 attempts
     n = int(e.get("attempts") or 0) + 1
     patch = {"ok": False, "attempts": n, "why": why,
@@ -406,6 +465,58 @@ def mark_fail(vid, why):
     if n >= MAX_ATTEMPTS:
         patch["abandoned"] = True
     update_entry(vid, patch)
+
+
+def ingest_orphans(verbose=True):
+    """把「磁盘上已有合格 raw、但注册表还没标 ok」的条目补登记进注册表。
+
+    🔴 为什么需要单独一个命令（2026-10-10 实锤）：
+    外机（remote / Mac mini）按设计**只写 shared raw、不写注册表**（单一写者原则，见 REG_WRITE），
+    由本机 stage1 扫到该条时顺带 `mark_ok` 补登记。但补登记**寄生在 stage1 主循环里** ——
+    一旦 stage1 卡死/空窗/收工，外机已转完的几十上百条就**一直躺在盘上不进注册表**，
+    后果是：① 看板「最近完成」看起来像停了；② 分机进度卡把外机的产出全算进「历史未标记」桶；
+    ③ 进度数字偏低估。
+
+    与 `build_registry()` 的区别（**别用那个**，见 MEMORY D18）：
+      - `build_registry()` **整表覆盖**且只写 7 个基础字段 → 会抹掉 abandoned/note/retry_rounds，
+        而且跑批时用会与 stage1 抢表。
+      - 本函数**逐条 `mark_ok`**（走 `_reg_guard()` 写锁 + 保留其他条目状态），**跑批期间也安全**。
+
+    `mark_ok` 会顺带透传 raw 里内嵌的 `machine` 字段 → 补登记后看板分机统计立刻归位。
+    返回 (补登记条数, raw 不合格条数, 已在册条数)。
+    """
+    reg = _reg()
+    ok_ids = {v for v, m in reg.items() if m.get("ok")}
+    added = bad = already = 0
+    for fn in sorted(os.listdir(RAW_DIR)):
+        if not fn.endswith(".json"):
+            continue
+        vid = fn[:-5]
+        if vid in ok_ids:
+            already += 1
+            continue
+        fp = os.path.join(RAW_DIR, fn)
+        try:
+            data = json.load(open(fp, encoding="utf-8"))
+        except Exception as e:
+            bad += 1
+            if verbose:
+                print(f"[ingest] 跳过 {vid}: 解析失败 {type(e).__name__}", flush=True)
+            continue
+        good, why = validate_raw(data)
+        if not good:
+            bad += 1
+            if verbose:
+                print(f"[ingest] 跳过 {vid}: {why}", flush=True)
+            continue
+        mark_ok(vid, data)          # 内含 machine 透传 + 切片缓存清理
+        added += 1
+        if verbose:
+            mc = data.get("machine") or "(无 machine 字段)"
+            print(f"[ingest] 补登记 {vid}  machine={mc}", flush=True)
+    print(f"[ingest] 完成：补登记 {added} 条 / 已在册 {already} 条 / "
+          f"raw 不合格 {bad} 条", flush=True)
+    return added, bad, already
 
 
 def mark_low_content(vid, note=""):
@@ -563,6 +674,127 @@ def release_lock(name="stage1"):
                 os.remove(p)
     except Exception:
         pass
+
+
+# ── 跨机 claim（按视频抢占，避免两台机器同时抢同一批未完成视频）──
+def _claim_path(vid):
+    return os.path.join(CLAIM_DIR, vid + ".claim")
+
+
+def _read_claim(vid):
+    p = _claim_path(vid)
+    if not os.path.exists(p):
+        return None
+    try:
+        d = json.load(open(p, encoding="utf-8"))
+    except Exception:
+        d = {}
+    d["_mtime"] = os.path.getmtime(p)
+    return d
+
+
+def _claim_stale(d):
+    """claim 是否陈旧可回收。
+
+    ⚠️ 关键：pid 存活判定**只对"本机自己的 claim"有效**。跨机器时对方的 pid
+    在本机查不到 → 永远返回 False；若不加 owner==本机 的限制，会**立刻回收掉
+    对方正在用的 claim**，反而导致两台抢同一条。所以：
+      · 本机 claim（owner==本机）且 pid 已死 → 陈旧（我崩了，别的实例可接管）
+      · 任意 claim 超 TTL → 陈旧（保守上界，含超长切片）
+      · 对方 live claim（owner≠本机 且未超 TTL）→ 不陈旧，必须让位
+    """
+    if not d:
+        return True
+    if time.time() - d.get("_mtime", 0) > CLAIM_TTL:
+        return True
+    if d.get("owner") == MACHINE_ID and d.get("pid") and not _pid_alive(d.get("pid")):
+        return True
+    return False
+
+
+def claim_try_acquire(vid):
+    """尝试占有某视频的转写权。
+
+    返回 (acquired, owner)。acquired=True 表示本机成功占有（含"本机陈旧 claim
+    被我回收后重占"）；owner 用于被拒时打印"被谁占用"。
+    用 O_EXCL 原子创建保证互斥；陈旧 claim 回收后重试（最多 3 次）。
+    """
+    if not CLAIM_ENABLED:
+        return True, MACHINE_ID
+    os.makedirs(CLAIM_DIR, exist_ok=True)
+    p = _claim_path(vid)
+    for _ in range(3):
+        try:
+            fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            d = _read_claim(vid)
+            if _claim_stale(d):
+                try:
+                    os.remove(p)        # 陈旧 → 回收后重试抢占
+                    continue
+                except OSError:
+                    pass
+            return False, (d or {}).get("owner", "?")
+        except OSError:
+            return False, "?"
+        try:
+            os.write(fd, json.dumps(
+                {"owner": MACHINE_ID, "pid": os.getpid(),
+                 "ts": datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")},
+                ensure_ascii=False).encode("utf-8"))
+        finally:
+            os.close(fd)
+        return True, MACHINE_ID
+    return False, "?"
+
+
+def claim_release(vid):
+    """释放本机占有的 claim（转写完成/失败/异常后调用）。"""
+    if not CLAIM_ENABLED:
+        return
+    p = _claim_path(vid)
+    try:
+        d = _read_claim(vid)
+        if d and d.get("owner") == MACHINE_ID:
+            os.remove(p)
+    except Exception:
+        pass
+
+
+def claim_state(vid):
+    """协调层状态，给看板/进度用：未转写 todo / 转写中 transcribing:<owner> / 转写完成 done。"""
+    if is_transcribed(vid):
+        return "done"
+    if CLAIM_ENABLED and os.path.exists(_claim_path(vid)):
+        return "transcribing:" + str((_read_claim(vid) or {}).get("owner", "?"))
+    return "todo"
+
+
+def reap_stale_claims(ttl=None):
+    """回收超过 TTL 或本机持有者已死的 claim（另一台崩溃遗留）。返回回收条数。"""
+    if not CLAIM_ENABLED:
+        return 0
+    ttl = ttl or CLAIM_TTL
+    n = 0
+    try:
+        for fn in os.listdir(CLAIM_DIR):
+            if not fn.endswith(".claim"):
+                continue
+            p = os.path.join(CLAIM_DIR, fn)
+            try:
+                d = json.load(open(p, encoding="utf-8"))
+            except Exception:
+                d = {}
+            if (time.time() - os.path.getmtime(p) > ttl) or \
+               (d.get("owner") == MACHINE_ID and d.get("pid") and not _pid_alive(d.get("pid"))):
+                try:
+                    os.remove(p)
+                    n += 1
+                except OSError:
+                    pass
+    except Exception:
+        pass
+    return n
 
 
 def is_abandoned(vid):
@@ -1262,6 +1494,8 @@ def slice_one(vid, seg_sec=None, force=False):
         "sliced": {"seg_sec": seg_sec, "parts": len(all_parts),
                    "sources": [os.path.basename(t["video"]) for t in tasks]},
     })
+    # 🔧 分机进度：把产出机器 stamp 进 raw，mark_ok 透传到注册表（看板按 machine 分流）
+    payload["machine"] = MACHINE_ID
     ok, why = validate_raw(payload)
     raw_path = os.path.join(RAW_DIR, vid + ".json")
     json.dump(payload, open(raw_path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
@@ -1318,6 +1552,11 @@ def stage1(limit=None):
 
 def _stage1_run(limit=None):
     tasks = build_task_list_src()
+    # 回收另一台崩溃遗留的陈旧 claim，让被卡住的视频重新可被本机接管
+    if CLAIM_ENABLED:
+        n = reap_stale_claims()
+        if n:
+            print(f"[claim] 回收陈旧 claim {n} 条", flush=True)
     print(f"[源] {SOURCE} / 共 {len(tasks)} 条", flush=True)
     authors_seen = {}
     done = skipped = failed = repaired = 0
@@ -1361,6 +1600,14 @@ def _stage1_run(limit=None):
         if limit and done >= limit:
             print(f"达到 limit={limit}，停止", flush=True)
             break
+        # ── 跨机 claim：占有本视频转写权（O_EXCL 原子）；另一台看到 claim 即跳过 ──
+        #    转写完成/失败/崩溃都释放；崩溃由 TTL + 启动时 reap 兜底，不会永久卡死。
+        if CLAIM_ENABLED:
+            got, owner = claim_try_acquire(vid)
+            if not got:
+                skipped += 1
+                print(f"[{i}/{total}] SKIP {vid} (被 {owner} 占用·转写中)", flush=True)
+                continue
         t0 = time.time()
         try:
             if not ensure_server():
@@ -1415,6 +1662,8 @@ def _stage1_run(limit=None):
             else:
                 r = asr_transcribe(t["video"], vid)
             payload = dict(t, **r)
+            # 🔧 分机进度：把产出机器 stamp 进 raw，mark_ok 透传到注册表
+            payload["machine"] = MACHINE_ID
             ok, why = validate_raw(payload)
             # 即使不完整也落盘，保留本次结果，避免下次从零开始
             json.dump(payload, open(raw_path, "w", encoding="utf-8"),
@@ -1435,6 +1684,9 @@ def _stage1_run(limit=None):
             failed += 1
             mark_fail(vid, f"异常: {e}")
             print(f"[{i}/{total}] FAIL {vid} {t['author']}: {e}", flush=True)
+        finally:
+            if CLAIM_ENABLED:
+                claim_release(vid)
     print(f"\n阶段1 完成: 新增{done} 跳过{skipped} 重转{repaired} 失败{failed} / 共{total}",
           flush=True)
 
@@ -1905,6 +2157,10 @@ if __name__ == "__main__":
         mark_low_content(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "")
     if mode == "syncmeta":
         sync_meta()               # 把源里的元数据同步进已落盘的 raw（不重转写）
+    if mode == "ingest":
+        # 补登记外机已转完但未进注册表的 raw（外机只写 raw，见 ingest_orphans 文档）
+        # 可加 --quiet 静默模式：python asr_batch.py ingest --quiet
+        ingest_orphans(verbose="--quiet" not in sys.argv)
     if mode == "syncmd":
         sync_md_header()          # 按 raw 刷新已生成 md 的头部（不重跑 LLM）
     if mode == "retry":
