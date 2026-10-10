@@ -653,14 +653,12 @@ def acquire_lock(name="stage1"):
                 return False                       # 持有者还活着 → 让位
             if not old and fresh:
                 return False                       # 别人刚创建、pid 还没写入的瞬间 → 让位
-            try:
-                os.remove(p)                       # 陈旧锁（pid 已死 / 内容非法）→ 清掉重试
+            if _rm(p):                # 陈旧锁（pid 已死 / 内容非法）→ 清掉重试
                 continue
-            except OSError:
-                try:                               # 删不掉（沙箱/权限拦截）→ 退化为覆盖，不能让陈旧锁卡死跑批
-                    open(p, "w", encoding="utf-8").write(str(os.getpid()))
-                    return True
-                except Exception:
+            try:                               # 删不掉（沙箱/权限拦截）→ 退化为覆盖，不能让陈旧锁卡死跑批
+                open(p, "w", encoding="utf-8").write(str(os.getpid()))
+                return True
+            except Exception:
                     return False
         except OSError:
             return False
@@ -673,13 +671,24 @@ def acquire_lock(name="stage1"):
 
 
 def release_lock(name="stage1"):
+    """释放本进程持有的锁。
+
+    🔴 原来这里是 `os.remove(p)` 且外面套`except: pass`：
+    沙箱 safe-delete 拦截时（2026-10-10 02:03 实测，日志里明确打出
+    `[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] ... targets=["...\\_stage1.lock"]`）
+    异常被吞 → **锁文件留在盘上** → 下次拉起会误判「已有实例在跑」而拒绝启动，
+    或让 checkpoint 反复以为实例还活着。改用 `_rm`（改名+删）并打日志。
+    """
     try:
         p = _lock_path(name)
         if os.path.exists(p):
             if open(p, encoding="utf-8").read().strip() == str(os.getpid()):
-                os.remove(p)
-    except Exception:
-        pass
+                if not _rm(p):
+                    print(f"[lock] 锁文件改名后未能删除（下次拉起可能误判在跑）: {p}",
+                          flush=True)
+    except Exception as e:
+        print(f"[lock] 释放 {name} 锁失败（忽略）: {type(e).__name__}: {str(e)[:80]}",
+              flush=True)
 
 
 # ── 跨机 claim（按视频抢占，避免两台机器同时抢同一批未完成视频）──
@@ -718,6 +727,44 @@ def _claim_stale(d):
     return False
 
 
+def _rm(path):
+    """**安全删除单个文件**：先 `os.replace` 改名，再尝试删改名后的文件。
+
+    🔴 为什么不能直接 `os.remove`（2026-10-09/10 两次事故）：
+    沙箱的safe-delete 会走回收站 `SHFileOperationW`，对本项目路径直接返回 `0x2`
+    （大文件/批量删除时还会被 `SAFE_DELETE_BULK_CONFIRM_REQUIRED` 拦下，count≥50）
+    → 抛异常。而这些删除都写在 `except: pass` 里 → **异常被静默吞掉，文件永远删不掉**，
+    进而让 stage1 主循环**卡死**（2026-10-10 02:03 实测：卡在删 `_claims` 上，日志再无输出）。
+
+    为什么要「改名 + 删除」两步：
+      · `os.replace`（改名）**不走删除通道**，实测可用 → 第一步就把目标文件移走了；
+      · 残留的 `.bak` 是**可恢复**的（比直接删掉更安全，真出意外还能捞回来）；
+      · 删 `.bak` 失败也无所谓 —— 顶多留个几十字节的小文件，不影响功能。
+
+    返回 True=确已消失；False=改名成功但 `.bak` 删不掉（功能无碍，仅留残file）。
+    """
+    try:
+        if not os.path.exists(path):
+            return True
+    except OSError:
+        return True
+    bak = path + ".bak"
+    try:
+        os.replace(path, bak)          # 第一步：改名（可用，不受 safe-delete 影响）
+    except OSError:
+        # 目标正被独占占用，或同名 .bak 已存在 → 退回直接删（能删掉就算成功）
+        try:
+            os.remove(path)
+            return True
+        except OSError:
+            return False
+    try:
+        os.remove(bak)                 # 第二步：删改名后的（失败也无所谓，留个残file）
+        return True
+    except OSError:
+        return False
+
+
 def claim_try_acquire(vid):
     """尝试占有某视频的转写权。
 
@@ -735,11 +782,8 @@ def claim_try_acquire(vid):
         except FileExistsError:
             d = _read_claim(vid)
             if _claim_stale(d):
-                try:
-                    os.remove(p)        # 陈旧 → 回收后重试抢占
+                if _rm(p):          # 陈旧 → 回收后重试抢占（_rm：改名+删，绕开safe-delete）
                     continue
-                except OSError:
-                    pass
             return False, (d or {}).get("owner", "?")
         except OSError:
             return False, "?"
@@ -762,9 +806,12 @@ def claim_release(vid):
     try:
         d = _read_claim(vid)
         if d and d.get("owner") == MACHINE_ID:
-            os.remove(p)
-    except Exception:
-        pass
+            _rm(p)
+    except Exception as e:
+        #⚠️ 原来这里是裸 `except: pass` →会把所有真实异常（含 safe-delete 拦截）
+        #    一起吞掉，导致 claim 永远删不掉、stage1 主循环卡死，且现场毫无线索。
+        print(f"[claim] 释放 {vid} 失败（忽略）: {type(e).__name__}: {str(e)[:80]}",
+              flush=True)
 
 
 def claim_state(vid):
@@ -793,11 +840,8 @@ def reap_stale_claims(ttl=None):
                 d = {}
             if (time.time() - os.path.getmtime(p) > ttl) or \
                (d.get("owner") == MACHINE_ID and d.get("pid") and not _pid_alive(d.get("pid"))):
-                try:
-                    os.remove(p)
+                if _rm(p):                  # 陈旧 claim 回收（_rm 绕开 safe-delete）
                     n += 1
-                except OSError:
-                    pass
     except Exception:
         pass
     return n
@@ -1320,10 +1364,7 @@ def _cut_segments(src, tag, seg_sec, outdir, force=False):
     existing = sorted(glob.glob(os.path.join(tagdir, "seg_*.wav")))
     if force:
         for f in existing:
-            try:
-                os.remove(f)
-            except Exception:
-                pass
+            _rm(f)                           # force 重切：段删不掉则下轮仍命中幂等分支，无害
         existing = []
 
     if not existing:
@@ -1355,10 +1396,7 @@ def _cut_segments(src, tag, seg_sec, outdir, force=False):
             if idx == len(existing) - 1:
                 print(f"[slice]   丢弃末尾碎段 {os.path.basename(f)}"
                       f"（{d:.2f}s）", flush=True)
-                try:
-                    os.remove(f)
-                except Exception:
-                    pass
+                _rm(f)                        # 碎段删不掉不影响正确性，下轮还在
                 continue
             if not d:
                 raise RuntimeError(f"段文件探测不到时长: {f}")

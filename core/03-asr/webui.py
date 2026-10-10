@@ -1041,6 +1041,31 @@ def progress_data():
     recent = sorted((dict(m, vid=v) for v, m in reg.items() if m.get("ok")),
                     key=lambda m: m.get("ts", ""), reverse=True)[:12]
 
+    # 🔴「最近完成」停滞 ≠ 转写停止（2026-10-10 实锤踩坑）：
+    # `recent` 取的是**注册表 ts 最新12 条** —— 只反映「谁写了注册表」，
+    # 而外机（Mac mini）**只写 shared raw、不写注册表**（注册表单���写者原则），
+    # 于是本机注册表停在某时刻 → 看板看起来「停了」，实际 raw 一直在涨。
+    # → 这里补一个**raw 最新落盘时间**，直接反映「引擎有没有在产出」。
+    raw_latest = None
+    try:
+        _raw_dir = B.RAW_DIR                    # 用 B.RAW_DIR，webui 本模块没定义 RAW_DIR
+        _mx = 0.0
+        for _f in os.listdir(_raw_dir):
+            if _f.endswith(".json"):
+                try:
+                    _m = os.path.getmtime(os.path.join(_raw_dir, _f))
+                    if _m > _mx:
+                        _mx = _m
+                except OSError:
+                    pass
+        if _mx:
+            raw_latest = {
+                "ts": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(_mx)),
+                "age_sec": int(time.time() - _mx),
+            }
+    except Exception:
+        pass
+
     return {
         "total": total, "done": done, "todo": len(todo),
         "percent": round(done / total * 100, 1) if total else 0,
@@ -1051,6 +1076,7 @@ def progress_data():
         "s1": _alive("stage1"), "s2": _alive("stage2"), "asr": _asr_up(),
         "authors": sorted(c["authors"].values(), key=lambda a: -a["docs"]),
         "recent": recent,
+        "raw_latest": raw_latest,
         "index_ts": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(c["ts"])),
     }
 
@@ -1430,6 +1456,21 @@ function lvTick(){
           .map(function(o){ return d.machine_labels[o]; }).join(' · ');
       }
     }
+    // ── 「最近完成」卡片上的 raw 落盘时间（1.2s 轮询实时刷新）──
+    // 这张表按注册表 ts 排序，外机只写 raw 不写注册表 → 表里时间可能停在很久前。
+    // 补一个「引擎实际产出时间」，避免看板看起来像停转了（2026-10-10 踩过）。
+    fetch('/api/progress',{cache:'no-store'}).then(function(r){return r.json();}).then(function(p){
+      var el=document.getElementById('raw-latest-ts');
+      if(!el) return;
+      if(p.raw_latest){
+        var a=p.raw_latest.age_sec;
+        el.textContent='引擎产出 '+p.raw_latest.ts.slice(11)
+          +(a<120?'':(a<3600?'（'+Math.round(a/60)+' 分钟前）':'（'+Math.round(a/3600)+' 小时前）'));
+        el.style.color = a<600 ? '#059669' : (a<3600 ? '#d97706' : '#dc2626');
+      } else {
+        el.textContent='raw 无落盘'; el.style.color='#dc2626';
+      }
+    }).catch(function(){});
   }).catch(function(){});
 }
 lvTick(); setInterval(lvTick, 1200);
@@ -1527,7 +1568,9 @@ DOCS_BODY = """
  </div>
 </div>
 
-<div class="card"><h2>最近完成 <span class="badge">最新 12 条</span></h2>
+<div class="card"><h2>最近完成 <span class="badge">最新 12 条</span>
+ <span class="badge" id="raw-latest" title="引擎实际产出节奏。外机（Mac mini）只写 raw 不写注册表，故这张表不能只看注册表时间">{% if p.raw_latest %}<span id="raw-latest-ts">{{ p.raw_latest.ts }}</span>{% else %}raw 无落盘{% endif %}</span>
+</h2>
  <table><thead><tr><th style="width:150px">完成时间</th><th style="width:140px">作者</th>
  <th>作品</th><th style="width:80px">时长</th></tr></thead><tbody>
  {% for r in p.recent %}
