@@ -101,17 +101,32 @@ def _file_stamp(path):
         return None
 
 
+def _read_text_shared(path):
+    """读文本文件（普通实现）。
+
+    ⚠️ **这里曾尝试用 `FILE_SHARE_DELETE` 打开以根治 D22，实测无效**
+    （2026-10-10 11:59 实证）。对照实验四组结论：
+      ① 无句柄 + `os.replace` → 成功
+      ② 持**普通**读句柄 + replace → **被拒**（D22 复现）
+      ③ 持 **SHARE_DELETE** 读句柄 + replace → **仍被拒**（共享模式假设被推翻）
+      ④ **覆盖写**（不删不替换）→ **成功**
+    ⇒ 阻塞源是「有读句柄时的删除/替换动作」本身，**无法靠共享模式绕开**；
+    ⇒ 根治手段在**写侧兜底链**（replace 失败退化为覆盖写），见 `save_registry`。
+    本函数保留名字仅为便于单测调用，行为退化为最简普通读。
+    """
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
 def load_registry():
     if not os.path.exists(REGISTRY):
         return {}
     try:
-        with open(REGISTRY, encoding="utf-8") as f:
-            return json.load(f)
+        return json.loads(_read_text_shared(REGISTRY))
     except Exception as e:
         time.sleep(0.2)                       # 可能的瞬时占用，重试一次
         try:
-            with open(REGISTRY, encoding="utf-8") as f:
-                return json.load(f)
+            return json.loads(_read_text_shared(REGISTRY))
         except Exception:
             pass
         # ⚠️ **绝不能静默返回 {}**（旧实现就是 `except: return {}`）—— 那等于"所有作品都没转过"，
@@ -130,39 +145,54 @@ def load_registry():
 
 
 def save_registry(reg, retries=3):
-    """原子写注册表（先写 .tmp 再 os.replace）。
+    """写注册表：**原子写优先，被拒时退化为覆盖写**（三段兜底链）。
 
-    🔴 为什么需要重试（2026-10-10 修D22）：
-    `os.replace` 在 Windows 上要求目标文件**不被任何句柄以禁止删除的方式打开**。
-    读侧 `_reg()` 用普通 `open()`（默认无 FILE_SHARE_DELETE）→ 别的进程（另一个
-    stage1/stage2/webui，或本进程自己的另一个读句柄）恰好在读注册表时，
-    写侧的 `os.replace` 就会抛 `[WinError 5] 拒绝访问`。
+    🔴 D22 背景（2026-10-10 11:59 完整诊断）：
+    `os.replace` 在 Windows 上要求目标文件不被任何句柄以禁止删除的方式打开。
+    WebUI 启动后 `live_state()` / `progress_data()` 在**1.2 秒轮询里反复 `load_registry()`**，
+    把写窗口全覆盖→ `os.replace` 必然被 `[WinError 5] 拒绝` → stage1 直接崩：
+      `PermissionError: 注册表写入失败（D22 读句柄占用，重试 3 次仍被拒）`
 
-    这个失败**不是数据问题**（`.tmp` 已写好，raw/md 也都产出了），只是本次标记没落地；
-    但若不重试就会把「一次成功」变成「抛异常崩掉」，实测会让 `ingest` 这类批量操作中途夭折
-    （补登记 176 条只成了 80 条就中断）。重试 3 次、每次间隔递增，覆盖读句柄的短暂窗口。
+    ⚠️ **试过读侧 `FILE_SHARE_DELETE`，实测无效**（对照实验：持 SHARE_DELETE 句柄时
+    replace 仍被拒，而**覆盖写成功**）→ 共享模式不是解药，别再走那条路。
+
+    兜底链（硬要求是「注册表一定要落盘」）：
+      ① `os.replace(tmp, REGISTRY)` —— 正常路径，原子
+      ② 退避重试 N 次（等读句柄窗口过去）
+      ③ **覆盖写 REGISTRY（不删不替换）** —— 实证可行，牺牲原子性换可用性。
+         风险窗口极小（单次写几百 KB，毫秒级）；真写坏了 `load_registry`
+         会备份 `.corrupt` 并抛错，**不会静默丢数据**。
     """
     tmp = REGISTRY + ".tmp"
-    json.dump(reg, open(tmp, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    payload = json.dumps(reg, ensure_ascii=False, indent=1)
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(payload)
+
     last = None
     for i in range(max(1, retries)):
         try:
             os.replace(tmp, REGISTRY)
             return
         except PermissionError as e:
-            # [WinError 5] 拒绝访问 = 目标正被别的读句柄占着（D22），等一下再试
             last = e
             if i < retries - 1:
                 time.sleep(0.15 * (i + 1))
-                # 复写 tmp：上一次 replace 失败时 tmp 仍在，但为防被并发清掉，重写一遍更稳
                 if not os.path.exists(tmp):
-                    json.dump(reg, open(tmp, "w", encoding="utf-8"),
-                              ensure_ascii=False, indent=1)
-    # 重试耗尽仍失败：明确抛 D22 说明，绝不静默丢数据
-    raise PermissionError(
-        "注册表写入失败（D22 读句柄占用，重试 %d 次仍被拒）: %s -> %s；"
-        "数据未丢，.tmp 仍在 %s，下次跑批会自动补登记"
-        % (retries, tmp, REGISTRY, tmp)) from last
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        f.write(payload)
+
+    # ── 兜底 ③：覆盖写（实测唯一能在读句柄存在时落盘的方式）──
+    try:
+        with open(REGISTRY, "w", encoding="utf-8") as f:
+            f.write(payload)
+        print("[registry] D22 兜底：os.replace 被拒，已改用**覆盖写**落盘"
+              "（牺牲原子性换取可用性）；残留 tmp=%s" % tmp, flush=True)
+        return
+    except Exception as e:
+        raise PermissionError(
+            "注册表写入失败（D22：os.replace 被拒 + 覆盖写也失败 %s）；"
+            "数据未丢，完整内容仍在 %s，下次跑批会自动补登记"
+            % (type(e).__name__, tmp)) from last
 
 
 # ── 注册表互斥用的跨平台「内核字节锁」原语 ──

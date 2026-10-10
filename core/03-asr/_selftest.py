@@ -215,6 +215,66 @@ def layer_b():
     else:
         warn("webui._slice_progress 不存在")
 
+    # --- B46. save_registry 的 D22 兜底链（2026-10-10 新增）---
+    # 背景：WebUI 1.2s 轮询反复读注册表 → `os.replace` 必然被 `[WinError 5]` 拒。
+    # 曾试读侧 FILE_SHARE_DELETE，**实测无效**（持该句柄时 replace 仍被拒，而覆盖写成功）。
+    # ⇒ 兜底链：replace → 退避重试 → **覆盖写**（实证唯一能在读句柄存在时落盘的方式）。
+    if hasattr(B, "save_registry"):
+        import shutil as _shb
+        _bakr = B.REGISTRY + ".b46bak"
+        _shb.copy2(B.REGISTRY, _bakr)
+        try:
+            # T1 正常路径
+            B.save_registry({"t": 1})
+            _d = json.loads(B._read_text_shared(B.REGISTRY))
+            if _d.get("t") != 1:
+                fail("B46-T1: 无读句柄时 save_registry 未正确落盘")
+            else:
+                ok("B46-T1: 无读句柄 → replace 路径正常")
+
+            # T2 🔴 核心场景：持读句柄（模拟 webui 轮询）仍必须落盘
+            _f = open(B.REGISTRY, "r", encoding="utf-8"); _f.read()
+            try:
+                B.save_registry({"t": 2})
+                _d = json.loads(B._read_text_shared(B.REGISTRY))
+                if _d.get("t") != 2:
+                    fail("B46-T2: 持读句柄时兜底未生效（数据没落盘）")
+                else:
+                    ok("B46-T2: 持读句柄 → 覆盖写兜底成功落盘（D22 根治）")
+            finally:
+                _f.close()
+
+            # T3 覆盖写不能产生半截 JSON（这是它唯一的风险）
+            _f = open(B.REGISTRY, "r", encoding="utf-8"); _f.read()
+            try:
+                B.save_registry({"t": 3, "big": "x" * 100000})
+            finally:
+                _f.close()
+            _d = json.loads(B._read_text_shared(B.REGISTRY))
+            if _d.get("t") == 3 and len(_d.get("big", "")) == 100000:
+                ok("B46-T3: 大payload 覆盖写后 JSON 完整可解析")
+            else:
+                fail("B46-T3: 覆盖写产生不完整 JSON")
+
+            # T4 残留 .tmp 不得影响 load_registry
+            if isinstance(B.load_registry(), dict):
+                ok("B46-T4: load_registry 忽略残留 .tmp 正常读取")
+            else:
+                fail("B46-T4: load_registry 读取异常")
+        finally:
+            _shb.copy2(_bakr, B.REGISTRY)
+            try:
+                os.remove(_bakr)
+            except OSError:
+                pass
+            if os.path.exists(B.REGISTRY + ".tmp"):
+                try:
+                    os.remove(B.REGISTRY + ".tmp")
+                except OSError:
+                    pass
+    else:
+        warn("asr_batch.save_registry 不存在（B46 未覆盖）")
+
     # --- B45. `_rm()` 安全删除（2026-10-10 新增）---
     # 背景：沙箱 safe-delete 会拦 `os.remove` 抛异常，而原先这些删除都写在
     # `except: pass` 里 → 异常被吞 → claim/锁文件永远删不掉 →
