@@ -73,7 +73,13 @@ REG_LOCK  = REGISTRY + ".lock"      # 注册表「读-改-写」互斥锁（见 
 # ⚠️ 与"按作者切分"是正交的：claim 解决"同库无切分时抢同一批"；切分解决
 # "按账号物理分摊"。两者可叠加。默认 WB_CLAIM=0（关）→ 对单机/现有行为零变化。
 CLAIM_DIR    = os.path.join(OUT_ROOT, "_claims")
-MACHINE_ID   = os.environ.get("WB_MACHINE_ID", platform.node() or "host")
+# 🔴 本机默认**恒为 `host`**，不再回退 `platform.node()`（2026-10-10改）。
+# 原因：`platform.node()` 会随 Windows 主机名变化，且**每次 clone/换机都可能不同**；
+# 外机显式设 `WB_MACHINE_ID=remote`，而本机若用 hostname → 同一台机器在注册表里
+# **分裂成两个桶**（实测真的出现了 `DESKTOP-2745159` 这个独立的 host 桶，
+# 看板要单独给它画一张卡、分机统计也被割裂）。
+# 显式设 `WB_MACHINE_ID` 仍可覆盖（外机就是这么做的），此处只改**默认值**。
+MACHINE_ID   = os.environ.get("WB_MACHINE_ID", "host")
 CLAIM_TTL    = int(os.environ.get("WB_CLAIM_TTL", "3600"))   # 秒；claim 最大存活（含超长切片）
 CLAIM_ENABLED = os.environ.get("WB_CLAIM", "0") == "1"
 # 注册表单一写者原则：claim 模式下只有 host（MACHINE_ID=host）写 _asr_registry.json，

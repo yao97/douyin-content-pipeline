@@ -37,6 +37,18 @@ MACHINE_NAMES = {
     "remote": os.environ.get("WB_NAME_REMOTE", "Mac mini 转写机"),
 }
 
+# 🔴 本机在 `CLAIM_ENABLED=False` 时 `asr_batch.MACHINE_ID` 取 `platform.node()`
+#（本机= DESKTOP-2745159），而外机用的是显式 `remote`
+# → **同一台机器会分裂成两个桶**（实测注册表里真的出现了 `DESKTOP-2745159` 这个独立桶）。
+# 这里把**本机的 hostname 也认成host**，无论它以哪个 id 落库都归到「本机」名下。
+try:
+    _local_node = os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or ""
+except Exception:
+    _local_node = ""
+if _local_node:
+    MACHINE_NAMES.setdefault(_local_node, MACHINE_NAMES["host"])
+    MACHINE_NAMES.setdefault(_local_node.split(".")[0], MACHINE_NAMES["host"])
+
 
 def machine_label(owner):
     """机器显示名。已登记的走 MACHINE_NAMES，未登记的原样返回 id（不猜、不吞）。"""
